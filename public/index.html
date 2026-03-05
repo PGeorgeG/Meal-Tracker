@@ -154,7 +154,7 @@ async function runEffect() {
   effectLoad.set(true); effectOpen.set(true); effectResult.set(null);
   try {
     const text = await callClaude(
-      'You are a nutrition and weight loss analyst. Use the Mifflin-St Jeor equation. Given a person\'s stats and today\'s meals, respond with a matter-of-fact nutrition assessment. JSON only, no markdown, no backticks:\n{"tdee":number,"deficit":number,"weeklyLossKg":number,"assessment":"Cover each point factually on separate lines: CALORIES: deficit or surplus and sustainability. PROTEIN: grams vs ideal for muscle preservation (aim ~166g for 104kg). CARBS: grams and balance. FAT: grams and balance. FIBER: rough estimate from foods, adequate (25g+) or likely low. VITAMINS: any likely gaps or strengths based on foods eaten. OVERALL: one sentence verdict. Then a short motivational note on a new line."}',
+      'You are a nutrition and weight loss analyst. Use the Mifflin-St Jeor equation. Be concise — one short sentence per field. JSON only, no markdown, no backticks:\n{"tdee":number,"deficit":number,"weeklyLossKg":number,"calories":"one sentence on deficit/surplus and sustainability","protein":"one sentence on adequacy for muscle preservation (target ~166g)","carbs":"one sentence","fat":"one sentence","fiber":"one sentence estimate","vitamins":"one sentence on any gaps or strengths","overall":"one sentence verdict","motivation":"one short encouraging line"}',
       `Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).\nToday\'s meals: ${todayMeals.get().map(m => m.description).join('; ')}.\nToday\'s totals: ${Math.round(tot.calories)} kcal, ${Math.round(tot.protein)}g protein, ${Math.round(tot.carbs)}g carbs, ${Math.round(tot.fat)}g fat.`,
       600
     );
@@ -378,7 +378,19 @@ function renderApp() {
               h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kg'),
             ),
           ),
-          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.6', borderTop:`1px solid ${C.border}`, paddingTop:'12px' }}, eResult.assessment),
+          h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'14px', display:'flex', flexDirection:'column', gap:'8px' }},
+            ...(['calories','protein','carbs','fat','fiber','vitamins'].map(key => {
+              const labels = { calories:'🔥 Calories', protein:'💪 Protein', carbs:'🌾 Carbs', fat:'🥑 Fat', fiber:'🌿 Fiber', vitamins:'💊 Vitamins' };
+              return h('div', { style:{ display:'flex', gap:'10px', alignItems:'flex-start' }},
+                h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted, whiteSpace:'nowrap', paddingTop:'1px', minWidth:'72px' }}, labels[key]),
+                h('span', { style:{ fontSize:'13px', color:C.text, lineHeight:'1.5' }}, eResult[key] || '—'),
+              );
+            })),
+            h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'10px', marginTop:'2px' }},
+              h('span', { style:{ fontSize:'13px', color:C.text, fontWeight:'500' }}, eResult.overall || ''),
+            ),
+            h('div', { style:{ paddingTop:'8px', fontSize:'12px', color:C.fat, fontStyle:'italic' }}, eResult.motivation || ''),
+          ),
           rerun,
         );
       }
