@@ -16,6 +16,7 @@
     ::-webkit-scrollbar-thumb { background: #2e2b26; border-radius: 2px; }
     button { -webkit-tap-highlight-color: transparent; }
   </style>
+<!-- __API_KEY_INJECT__ -->
 </head>
 <body>
 <div id="root"></div>
@@ -76,7 +77,7 @@ const C = {
 const todayStr = () => new Date().toISOString().split('T')[0];
 const DEFAULT_GOALS = { calories: 2000, carbs: 250 };
 
-const apiKey        = signal(localStorage.getItem('meb_apikey') || '');
+const apiKey        = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
 const meals         = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
 const goals         = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
 const date          = signal(todayStr());
@@ -235,8 +236,9 @@ function renderApp() {
   // Header
   const dateInput = h('input', { type:'date', value:date.get(), style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', cursor:'pointer', outline:'none', padding:'0', marginTop:'4px' }});
   dateInput.addEventListener('change', e => date.set(e.target.value));
-  const apiKeyLink = h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
-  apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
+  const serverKey = !!window.__ANTHROPIC_API_KEY__;
+  const apiKeyLink = serverKey ? h('span',{}) : h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
+  if (!serverKey) apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
   const header = h('div', { style:{ marginBottom:'28px' }},
     h('div', { style:{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:'2px' }},
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
