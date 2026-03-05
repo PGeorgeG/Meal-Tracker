@@ -93,9 +93,16 @@ const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
 
+function saveExercise(v) { exerciseCal.set(v); localStorage.setItem('meb_exercise', String(v)); }
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
 function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
 
+// Reset exercise calories when date changes
+effect(() => {
+  const d = date.get();
+  const saved = localStorage.getItem('meb_exercise_date');
+  if (saved !== d) { exerciseCal.set(0); localStorage.setItem('meb_exercise', '0'); localStorage.setItem('meb_exercise_date', d); }
+});
 const todayMeals = computed(() => meals.get().filter(m => m.date === date.get()));
 const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
   calories: acc.calories + m.calories,
@@ -164,8 +171,10 @@ async function runEffect() {
       'You are a nutrition and weight loss analyst. Use the Mifflin-St Jeor equation. Be concise — one short sentence per field. These are NOT necessarily the full day\'s totals — account for time of day and meals still to come. JSON only, no markdown, no backticks:\n{"tdee":number,"deficit":number,"weeklyLossKg":number,"calories":"sentence on calories so far and how much room remains for the day","protein":"sentence on protein so far vs target ~166g and whether more is needed","carbs":"sentence on carbs so far and remaining balance","fat":"sentence on fat so far","fiber":"sentence on fiber estimate and whether more needed","vitamins":"sentence on any gaps or strengths based on foods eaten","overall":"one sentence on how the day is tracking so far, or full verdict if day is complete","motivation":"one short encouraging line"}',
       `Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).
 Current time: ${timeStr}. ${dayComplete ? 'The eating window is closed (after 8pm) — this is the full day.' : `About ${hoursLeft.toFixed(1)} hours left in the eating window (stops at 8pm).`}
+Exercise burned today: ${exerciseCal.get()} kcal (from Strava/Coros — note these devices typically over-report by 10-20%, factor that in your assessment).
 Meals so far: ${todayMeals.get().map(m => m.description).join('; ')}.
-Totals so far: ${Math.round(tot.calories)} kcal, ${Math.round(tot.protein)}g protein, ${Math.round(tot.carbs)}g carbs, ${Math.round(tot.fat)}g fat.`,
+Totals so far: ${Math.round(tot.calories)} kcal eaten, ${Math.round(tot.protein)}g protein, ${Math.round(tot.carbs)}g carbs, ${Math.round(tot.fat)}g fat.
+Net calories so far: ${Math.round(tot.calories - exerciseCal.get())} kcal (eaten minus exercise burn).`,
       600
     );
     effectResult.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
@@ -295,6 +304,21 @@ function renderApp() {
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
     macroBar('Fat',      tot.fat,      65,          C.fat),
     editGoalsBtn,
+    // Exercise calories row
+    h('div', { style:{ marginTop:'14px', paddingTop:'12px', borderTop:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:'10px' }},
+      h('span', { style:{ fontSize:'13px', color:C.muted, flex:'1' }}, '🏃 Exercise burned'),
+      (() => {
+        const exInp = h('input', { type:'number', placeholder:'0', value: exerciseCal.get() || '', style:{
+          width:'80px', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'6px',
+          color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'5px 8px', outline:'none', textAlign:'right',
+        }});
+        exInp.addEventListener('focus', () => exInp.style.borderColor = C.accent+'88');
+        exInp.addEventListener('blur',  () => { exInp.style.borderColor = C.border; const v = parseInt(exInp.value)||0; saveExercise(v); });
+        exInp.addEventListener('change', () => { const v = parseInt(exInp.value)||0; saveExercise(v); });
+        return exInp;
+      })(),
+      h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal'),
+    ),
   );
 
   // Meal input — stable ref
