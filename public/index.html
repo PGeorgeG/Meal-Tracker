@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Mise en Bouche</title>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { background: #0f0e0c; color: #f0ead8; font-family: 'DM Sans', sans-serif; -webkit-font-smoothing: antialiased; }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.4); }
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #1a1916; }
+    ::-webkit-scrollbar-thumb { background: #2e2b26; border-radius: 2px; }
+    button { -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ── Minimal h() helper (no React, no Babel) ───────────────────────────────────
+function h(tag, props, ...children) {
+  if (typeof tag === 'function') return tag({ ...props, children: children.flat() });
+  const el = document.createElement(tag);
+  if (props) {
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k === 'className') el.className = v;
+      else if (k !== 'key') el.setAttribute(k, v);
+    }
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child == null || child === false) continue;
+    el.appendChild(typeof child === 'string' || typeof child === 'number' ? document.createTextNode(child) : child);
+  }
+  return el;
+}
+
+// ── Reactivity: tiny signal-based state ──────────────────────────────────────
+let currentEffect = null;
+function signal(init) {
+  let val = init;
+  const subs = new Set();
+  return {
+    get() { if (currentEffect) subs.add(currentEffect); return val; },
+    set(v) { val = typeof v === 'function' ? v(val) : v; subs.forEach(s => s()); },
+  };
+}
+function effect(fn) {
+  const run = () => { currentEffect = run; fn(); currentEffect = null; };
+  run();
+}
+function computed(fn) {
+  const s = signal(undefined);
+  effect(() => s.set(fn()));
+  return { get: s.get.bind(s) };
+}
+
+// ── Mount a component that re-renders on signal change ────────────────────────
+function mount(container, renderFn) {
+  let node = null;
+  effect(() => {
+    const next = renderFn();
+    if (node) container.replaceChild(next, node);
+    else container.appendChild(next);
+    node = next;
+  });
+}
+
+// ── Stable refs: DOM nodes that persist across re-renders ─────────────────────
+const refs = {};
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const MODEL = 'claude-sonnet-4-20250514';
+const C = {
+  bg:'#0f0e0c', card:'#1a1916', border:'#2e2b26', accent:'#e8c547',
+  text:'#f0ead8', muted:'#7a7060', protein:'#e07b54', carbs:'#5b9bd5',
+  fat:'#8fc47a', calories:'#e8c547', danger:'#c94f4f', analysis:'#161814',
+};
+const todayStr = () => new Date().toISOString().split('T')[0];
+const DEFAULT_GOALS = { calories: 2000, carbs: 250 };
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const apiKey   = signal(localStorage.getItem('meb_apikey') || '');
+const meals    = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
+const goals    = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
+const date     = signal(todayStr());
+const inputVal = { value: '' }; // plain ref, not a signal — avoids re-render on keystroke
+const loading  = signal(false);
+const errMsg   = signal('');
+const editGoals= signal(false);
+const analysis = signal(null);
+const analysisLoading = signal(false);
+const analysisOpen    = signal(false);
+const apiKeyInput     = { value: '' }; // plain ref
+
+function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
+function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
+
+const todayMeals = computed(() => meals.get().filter(m => m.date === date.get()));
+const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
+  calories: acc.calories + m.calories,
+  protein:  acc.protein  + m.protein,
+  carbs:    acc.carbs    + m.carbs,
+  fat:      acc.fat      + (m.fat || 0),
+}), { calories:0, protein:0, carbs:0, fat:0 }));
+
+// ── API calls ─────────────────────────────────────────────────────────────────
+async function callClaude(system, userMsg, maxTokens=300) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey.get(),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role:'user', content: userMsg }] }),
+  });
+  const data = await res.json();
+  return data.content.map(b => b.text || '').join('');
+}
+
+async function estimateMeal(desc) {
+  loading.set(true); errMsg.set('');
+  try {
+    const text = await callClaude(
+      'You are a nutrition estimation assistant. Given a meal description, estimate calories, protein (g), carbs (g), and fat (g).\nRespond ONLY with valid JSON, no markdown:\n{"calories":number,"protein":number,"carbs":number,"fat":number,"note":"brief note"}',
+      'Estimate nutrition for: ' + desc
+    );
+    return JSON.parse(text.replace(/```json|```/g,'').trim());
+  } catch(e) {
+    console.error(e); errMsg.set('Could not estimate nutrition. Try again.'); return null;
+  } finally { loading.set(false); }
+}
+
+async function runAnalysis() {
+  const list = todayMeals.get();
+  if (!list.length) return;
+  analysisLoading.set(true); analysisOpen.set(true); analysis.set(null);
+  try {
+    const mealList = list.map(m => `- ${m.description}: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`).join('\n');
+    const text = await callClaude(
+      'You are a practical nutrition coach. Identify where calories could most easily be cut. Be specific and concise. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"swap","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"summary":"one sentence"}',
+      'Today\'s meals:\n' + mealList + '\n\nWhere could I most easily cut calories?',
+      600
+    );
+    analysis.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
+  } catch { analysis.set({ error: true }); }
+  finally { analysisLoading.set(false); }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function macroBar(label, value, max, color) {
+  const pct = Math.min((value / max) * 100, 100).toFixed(1);
+  return h('div', { style: { marginBottom:'10px' } },
+    h('div', { style: { display:'flex', justifyContent:'space-between', marginBottom:'4px', fontSize:'12px', fontFamily:"'DM Mono',monospace" } },
+      h('span', { style: { color:C.text, textTransform:'uppercase', letterSpacing:'1px' } }, label),
+      h('span', { style: { color } }, Math.round(value), h('span', { style:{ color:C.muted } }, '/', max)),
+    ),
+    h('div', { style: { height:'6px', borderRadius:'3px', background:C.border, overflow:'hidden' } },
+      h('div', { style: { height:'100%', width:pct+'%', background:color, borderRadius:'3px', transition:'width 0.5s ease' } }),
+    ),
+  );
+}
+
+function btn(text, onclick, accent=true, disabled=false) {
+  const el = h('button', {
+    style: {
+      width:'100%', padding:'12px', border:'none', borderRadius:'10px',
+      background: disabled ? C.border : (accent ? C.accent : C.border),
+      color: disabled ? C.muted : (accent ? '#1a1600' : C.text),
+      fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px',
+      cursor: disabled ? 'not-allowed' : 'pointer', transition:'background 0.2s',
+    },
+  }, text);
+  if (!disabled) el.addEventListener('click', onclick);
+  return el;
+}
+
+function iconBtn(symbol, color, onclick) {
+  const el = h('button', {
+    style: { background:'none', border:`1px solid ${color}44`, borderRadius:'6px', color, padding:'4px 8px', cursor:'pointer', fontSize:'14px', transition:'background 0.2s', flexShrink:'0' }
+  }, symbol);
+  el.addEventListener('mouseenter', () => el.style.background = color+'22');
+  el.addEventListener('mouseleave', () => el.style.background = 'none');
+  el.addEventListener('click', onclick);
+  return el;
+}
+
+function styledInput(type, placeholder, sig, extraStyle={}) {
+  const el = h('input', { type, placeholder, style: {
+    width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'8px',
+    color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'10px 12px', outline:'none',
+    ...extraStyle,
+  }});
+  el.value = sig.get();
+  el.addEventListener('input', () => sig.set(el.value));
+  el.addEventListener('focus', () => el.style.borderColor = C.accent+'88');
+  el.addEventListener('blur',  () => el.style.borderColor = C.border);
+  return el;
+}
+
+// ── Screens ───────────────────────────────────────────────────────────────────
+function renderApiKeyScreen() {
+  const inp = h('input', { type:'password', placeholder:'sk-ant-...', style: {
+    width:'100%', background:'#0f0e0c', border:`1px solid ${C.border}`, borderRadius:'8px',
+    color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'10px 12px', outline:'none', marginBottom:'12px',
+  }});
+  inp.addEventListener('focus', () => inp.style.borderColor = C.accent+'88');
+  inp.addEventListener('blur',  () => inp.style.borderColor = C.border);
+  inp.addEventListener('input', () => {
+    apiKeyInput.value = inp.value;
+    continueBtn.style.background = inp.value.startsWith('sk-') ? C.accent : C.border;
+    continueBtn.style.color = inp.value.startsWith('sk-') ? '#1a1600' : C.muted;
+    continueBtn.style.cursor = inp.value.startsWith('sk-') ? 'pointer' : 'not-allowed';
+  });
+  const save = () => {
+    const v = inp.value.trim();
+    if (v.startsWith('sk-')) { localStorage.setItem('meb_apikey', v); apiKey.set(v); }
+  };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  inp.addEventListener('input', () => { apiKeyInput.value = inp.value; });
+
+  const continueBtn = h('button', { style: {
+    width:'100%', padding:'11px', background:C.border, color:C.muted,
+    border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'14px', cursor:'not-allowed',
+  }}, 'Continue');
+  continueBtn.addEventListener('click', save);
+
+  return h('div', { style:{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:'24px' }},
+    h('div', { style:{ maxWidth:'400px', width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'14px', padding:'28px 24px' }},
+      h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'24px', color:C.accent, marginBottom:'6px' }}, 'Mise en Bouche'),
+      h('p', { style:{ color:C.muted, fontSize:'13px', marginBottom:'22px', lineHeight:'1.6' }}, "Enter your Anthropic API key to get started. It's stored only in this browser."),
+      inp,
+      continueBtn,
+      h('p', { style:{ color:C.muted, fontSize:'11px', marginTop:'12px', textAlign:'center' }}, 'Key saved to localStorage — never sent anywhere except Anthropic.'),
+    ),
+  );
+}
+
+function renderApp() {
+  const tm = todayMeals.get();
+  const tot = totals.get();
+  const g = goals.get();
+  const remaining = g.calories - tot.calories;
+  const over = remaining < 0;
+  const isLoading = loading.get();
+  const inp = inputVal.value;
+  const err = errMsg.get();
+
+  // Header
+  const dateInput = h('input', { type:'date', value:date.get(), style:{
+    background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace",
+    fontSize:'12px', cursor:'pointer', outline:'none', padding:'0', marginTop:'4px',
+  }});
+  dateInput.addEventListener('change', e => date.set(e.target.value));
+
+  const apiKeyLink = h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
+  apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
+
+  const header = h('div', { style:{ marginBottom:'28px' }},
+    h('div', { style:{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:'2px' }},
+      h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
+        h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'28px', margin:'0', color:C.accent }}, 'Mise en Bouche'),
+        h('span', { style:{ fontSize:'13px', color:C.muted }}, 'meal journal'),
+      ),
+      apiKeyLink,
+    ),
+    dateInput,
+  );
+
+  // Goals editor
+  let goalsEditor = null;
+  if (editGoals.get()) {
+    const calInp = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const carbInp = h('input', { type:'number', value:String(g.carbs), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
+    saveBtn.addEventListener('click', () => {
+      const c = parseInt(calInp.value), cb = parseInt(carbInp.value);
+      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb }); editGoals.set(false); }
+    });
+    const cancelBtn = h('button', { style:{ flex:'1', padding:'9px', background:'none', color:C.muted, border:`1px solid ${C.border}`, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
+    cancelBtn.addEventListener('click', () => editGoals.set(false));
+    goalsEditor = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'14px' }}, 'Daily Goals'),
+      h('div', { style:{ display:'flex', gap:'12px', marginBottom:'12px' }},
+        h('div', { style:{ flex:'1' }},
+          h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'),
+          calInp,
+        ),
+        h('div', { style:{ flex:'1' }},
+          h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'),
+          carbInp,
+        ),
+      ),
+      h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
+    );
+  }
+
+  // Summary card
+  const editGoalsBtn = h('button', { style:{ marginTop:'10px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }},
+    editGoals.get() ? 'cancel' : 'edit goals'
+  );
+  editGoalsBtn.addEventListener('click', () => editGoals.set(v => !v));
+
+  const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px' }},
+    h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
+      h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
+      h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
+        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }},
+          over ? `${Math.abs(Math.round(remaining))} over` : `${Math.round(remaining)} left`
+        ),
+        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent }},
+          Math.round(tot.calories), h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')
+        ),
+      ),
+    ),
+    macroBar('Calories', tot.calories, g.calories, C.calories),
+    macroBar('Protein',  tot.protein,  150,         C.protein),
+    macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
+    macroBar('Fat',      tot.fat,      65,          C.fat),
+    editGoalsBtn,
+  );
+
+  // Meal input
+  const textarea = h('textarea', { placeholder:"Describe your meal… e.g. 'grilled salmon with roasted sweet potato and salad'", rows:'3', style:{
+    width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px',
+    color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px',
+    resize:'none', outline:'none', lineHeight:'1.5',
+  }});
+  textarea.value = inp;
+  textarea.addEventListener('input', e => inputVal.value = e.target.value);
+  textarea.addEventListener('focus', () => textarea.style.borderColor = C.accent+'88');
+  textarea.addEventListener('blur',  () => textarea.style.borderColor = C.border);
+  textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addMeal(); }});
+
+  const logBtn = h('button', { style:{
+    marginTop:'10px', width:'100%', padding:'12px', border:'none', borderRadius:'10px',
+    background: isLoading || !inputVal.value.trim() ? C.border : C.accent,
+    color: isLoading || !inputVal.value.trim() ? C.muted : '#1a1600',
+    fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px',
+    cursor: isLoading || !inputVal.value.trim() ? 'not-allowed' : 'pointer',
+  }}, isLoading ? 'Estimating…' : 'Log Meal');
+  if (!isLoading && inputVal.value.trim()) logBtn.addEventListener('click', addMeal);
+
+  const inputSection = h('div', { style:{ marginBottom:'20px' }},
+    textarea,
+    err ? h('div', { style:{ color:C.danger, fontSize:'12px', marginTop:'6px', fontFamily:"'DM Mono',monospace" }}, err) : h('span',{}),
+    logBtn,
+  );
+
+  // Analysis panel
+  let analysisPanel = null;
+  if (tm.length > 0) {
+    const toggleBtn = h('button', { style:{
+      width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`,
+      borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500',
+      fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+    }}, '✂️ ', analysisOpen.get() ? 'Hide Analysis' : 'Where can I cut calories?');
+    toggleBtn.addEventListener('click', () => {
+      if (analysisOpen.get()) analysisOpen.set(false);
+      else runAnalysis();
+    });
+
+    let panelContent = null;
+    if (analysisOpen.get()) {
+      const al = analysis.get();
+      const aLoad = analysisLoading.get();
+      let inner;
+      if (aLoad) {
+        inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Analysing your meals…');
+      } else if (al?.error) {
+        inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
+      } else if (al) {
+        const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.accent+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-run analysis');
+        rerun.addEventListener('click', runAnalysis);
+        inner = h('div', {},
+          h('div', { style:{ marginBottom:'14px' }},
+            h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent, marginBottom:'8px' }}, 'Best Cut'),
+            h('div', { style:{ background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.accent}33`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+              h('div', { style:{ flex:'1' }},
+                h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal),
+                h('div', { style:{ color:C.muted }}, al.topCut.suggestion),
+              ),
+              h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
+            ),
+          ),
+          al.otherTips?.length ? h('div', { style:{ marginBottom:'14px' }},
+            h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'8px' }}, 'Other Ideas'),
+            h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px' }},
+              ...al.otherTips.map(tip =>
+                h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                  h('div', { style:{ flex:'1' }},
+                    h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal),
+                    h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion),
+                  ),
+                  h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
+                )
+              ),
+            ),
+          ) : h('span',{}),
+          h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'12px', marginTop:'4px', color:C.muted, fontStyle:'italic', fontSize:'12px' }}, al.summary),
+          rerun,
+        );
+      }
+      panelContent = h('div', { style:{ marginTop:'10px', background:C.analysis, border:`1px solid ${C.accent}33`, borderRadius:'10px', padding:'16px 18px', fontSize:'13px', lineHeight:'1.6' }}, inner || h('span',{}));
+    }
+    analysisPanel = h('div', { style:{ marginBottom:'24px' }}, toggleBtn, panelContent || h('span',{}));
+  }
+
+  // Meal list
+  let mealList;
+  if (tm.length === 0) {
+    mealList = h('div', { style:{ textAlign:'center', color:C.muted, fontStyle:'italic', padding:'40px 0', fontSize:'14px' }}, 'No meals logged yet for this day.');
+  } else {
+    mealList = h('div', {},
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'12px' }},
+        tm.length + ' meal' + (tm.length !== 1 ? 's' : '')
+      ),
+      ...([...tm].reverse().map(meal => {
+        const card = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', padding:'14px 16px', marginBottom:'10px', display:'flex', gap:'12px', alignItems:'flex-start', transition:'border-color 0.2s' }},
+          h('div', { style:{ flex:'1', minWidth:'0' }},
+            h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'15px', color:C.text, marginBottom:'6px', lineHeight:'1.3' }}, meal.description),
+            h('div', { style:{ display:'flex', gap:'12px', flexWrap:'wrap' }},
+              h('span', { style:{ fontSize:'12px', color:C.calories, fontFamily:"'DM Mono',monospace" }}, '🔥 '+meal.calories+' kcal'),
+              h('span', { style:{ fontSize:'12px', color:C.protein,  fontFamily:"'DM Mono',monospace" }}, '💪 '+meal.protein+'g prot'),
+              h('span', { style:{ fontSize:'12px', color:C.carbs,    fontFamily:"'DM Mono',monospace" }}, '🌾 '+meal.carbs+'g carbs'),
+              h('span', { style:{ fontSize:'12px', color:C.fat,      fontFamily:"'DM Mono',monospace" }}, '🥑 '+(meal.fat||0)+'g fat'),
+            ),
+            meal.note ? h('div', { style:{ fontSize:'11px', color:C.muted, marginTop:'5px', fontStyle:'italic' }}, meal.note) : h('span',{}),
+          ),
+          h('div', { style:{ display:'flex', gap:'6px', flexShrink:'0' }},
+            iconBtn('↻', C.accent, () => inputVal.value = meal.description),
+            iconBtn('×', C.danger, () => saveMeals(meals.get().filter(m => m.id !== meal.id))),
+          ),
+        );
+        card.addEventListener('mouseenter', () => card.style.borderColor = C.accent+'55');
+        card.addEventListener('mouseleave', () => card.style.borderColor = C.border);
+        return card;
+      })),
+    );
+  }
+
+  return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
+    h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
+      header,
+      goalsEditor || h('span',{}),
+      summary,
+      inputSection,
+      analysisPanel || h('span',{}),
+      mealList,
+    ),
+  );
+}
+
+async function addMeal() {
+  const desc = inputVal.value.trim();
+  if (!desc || loading.get()) return;
+  const nutrition = await estimateMeal(desc);
+  if (!nutrition) return;
+  saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
+  inputVal.value = '';
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+mount(document.getElementById('root'), () =>
+  apiKey.get() ? renderApp() : renderApiKeyScreen()
+);
+</script>
+</body>
+</html>
