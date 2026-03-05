@@ -16,12 +16,10 @@
     ::-webkit-scrollbar-thumb { background: #2e2b26; border-radius: 2px; }
     button { -webkit-tap-highlight-color: transparent; }
   </style>
-<!-- __API_KEY_INJECT__ -->
 </head>
 <body>
 <div id="root"></div>
 <script>
-// ── Minimal h() helper (no React, no Babel) ───────────────────────────────────
 function h(tag, props, ...children) {
   if (typeof tag === 'function') return tag({ ...props, children: children.flat() });
   const el = document.createElement(tag);
@@ -40,7 +38,6 @@ function h(tag, props, ...children) {
   return el;
 }
 
-// ── Reactivity: tiny signal-based state ──────────────────────────────────────
 let currentEffect = null;
 function signal(init) {
   let val = init;
@@ -59,8 +56,6 @@ function computed(fn) {
   effect(() => s.set(fn()));
   return { get: s.get.bind(s) };
 }
-
-// ── Mount a component that re-renders on signal change ────────────────────────
 function mount(container, renderFn) {
   let node = null;
   effect(() => {
@@ -71,10 +66,7 @@ function mount(container, renderFn) {
   });
 }
 
-// ── Stable refs: DOM nodes that persist across re-renders ─────────────────────
 const refs = {};
-
-// ── Constants ─────────────────────────────────────────────────────────────────
 const MODEL = 'claude-sonnet-4-20250514';
 const C = {
   bg:'#0f0e0c', card:'#1a1916', border:'#2e2b26', accent:'#e8c547',
@@ -84,19 +76,21 @@ const C = {
 const todayStr = () => new Date().toISOString().split('T')[0];
 const DEFAULT_GOALS = { calories: 2000, carbs: 250 };
 
-// ── State ─────────────────────────────────────────────────────────────────────
-const apiKey   = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
-const meals    = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
-const goals    = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
-const date     = signal(todayStr());
-const inputVal = { value: '' }; // plain ref, not a signal — avoids re-render on keystroke
-const loading  = signal(false);
-const errMsg   = signal('');
-const editGoals= signal(false);
-const analysis = signal(null);
-const analysisLoading = signal(false);
-const analysisOpen    = signal(false);
-const apiKeyInput     = { value: '' }; // plain ref
+const apiKey        = signal(localStorage.getItem('meb_apikey') || '');
+const meals         = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
+const goals         = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
+const date          = signal(todayStr());
+const inputVal      = { value: '' };
+const loading       = signal(false);
+const errMsg        = signal('');
+const editGoals     = signal(false);
+const analysis      = signal(null);
+const analysisLoad  = signal(false);
+const analysisOpen  = signal(false);
+const effectResult  = signal(null);
+const effectLoad    = signal(false);
+const effectOpen    = signal(false);
+const apiKeyInput   = { value: '' };
 
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
 function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
@@ -109,7 +103,6 @@ const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
   fat:      acc.fat      + (m.fat || 0),
 }), { calories:0, protein:0, carbs:0, fat:0 }));
 
-// ── API calls ─────────────────────────────────────────────────────────────────
 async function callClaude(system, userMsg, maxTokens=300) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -129,7 +122,7 @@ async function estimateMeal(desc) {
   loading.set(true); errMsg.set('');
   try {
     const text = await callClaude(
-      'You are a nutrition estimation assistant. Given a meal description, estimate calories, protein (g), carbs (g), and fat (g).\nRespond ONLY with valid JSON, no markdown:\n{"calories":number,"protein":number,"carbs":number,"fat":number,"note":"brief note"}',
+      'You are a nutrition estimation assistant. Estimate calories, protein (g), carbs (g), and fat (g) for the meal described.\nRespond ONLY with valid JSON, no markdown:\n{"calories":number,"protein":number,"carbs":number,"fat":number,"note":"brief note"}',
       'Estimate nutrition for: ' + desc
     );
     return JSON.parse(text.replace(/```json|```/g,'').trim());
@@ -141,20 +134,44 @@ async function estimateMeal(desc) {
 async function runAnalysis() {
   const list = todayMeals.get();
   if (!list.length) return;
-  analysisLoading.set(true); analysisOpen.set(true); analysis.set(null);
+  analysisLoad.set(true); analysisOpen.set(true); analysis.set(null);
   try {
     const mealList = list.map(m => `- ${m.description}: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`).join('\n');
     const text = await callClaude(
       'You are a practical nutrition coach. Identify where calories could most easily be cut. Be specific and concise. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"swap","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"summary":"one sentence"}',
-      'Today\'s meals:\n' + mealList + '\n\nWhere could I most easily cut calories?',
+      "Today's meals:\n" + mealList + '\n\nWhere could I most easily cut calories?',
       600
     );
     analysis.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
   } catch { analysis.set({ error: true }); }
-  finally { analysisLoading.set(false); }
+  finally { analysisLoad.set(false); }
 }
 
-// ── UI helpers ────────────────────────────────────────────────────────────────
+async function runEffect() {
+  const tot = totals.get();
+  if (!tot.calories) return;
+  effectLoad.set(true); effectOpen.set(true); effectResult.set(null);
+  try {
+    const text = await callClaude(
+      'You are a nutrition and weight loss analyst. Use the Mifflin-St Jeor equation. Given a person\'s stats and today\'s meals, respond with a matter-of-fact nutrition assessment. JSON only, no markdown, no backticks:\n{"tdee":number,"deficit":number,"weeklyLossKg":number,"assessment":"Cover each point factually on separate lines: CALORIES: deficit or surplus and sustainability. PROTEIN: grams vs ideal for muscle preservation (aim ~166g for 104kg). CARBS: grams and balance. FAT: grams and balance. FIBER: rough estimate from foods, adequate (25g+) or likely low. VITAMINS: any likely gaps or strengths based on foods eaten. OVERALL: one sentence verdict. Then a short motivational note on a new line."}',
+      `Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).\nToday\'s meals: ${todayMeals.get().map(m => m.description).join('; ')}.\nToday\'s totals: ${Math.round(tot.calories)} kcal, ${Math.round(tot.protein)}g protein, ${Math.round(tot.carbs)}g carbs, ${Math.round(tot.fat)}g fat.`,
+      600
+    );
+    effectResult.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
+  } catch(e) { console.error(e); effectResult.set({ error: true }); }
+  finally { effectLoad.set(false); }
+}
+
+async function addMeal() {
+  const desc = inputVal.value.trim();
+  if (!desc || loading.get()) return;
+  const nutrition = await estimateMeal(desc);
+  if (!nutrition) return;
+  saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
+  inputVal.value = '';
+  if (refs.textarea) refs.textarea.value = '';
+}
+
 function macroBar(label, value, max, color) {
   const pct = Math.min((value / max) * 100, 100).toFixed(1);
   return h('div', { style: { marginBottom:'10px' } },
@@ -168,44 +185,14 @@ function macroBar(label, value, max, color) {
   );
 }
 
-function btn(text, onclick, accent=true, disabled=false) {
-  const el = h('button', {
-    style: {
-      width:'100%', padding:'12px', border:'none', borderRadius:'10px',
-      background: disabled ? C.border : (accent ? C.accent : C.border),
-      color: disabled ? C.muted : (accent ? '#1a1600' : C.text),
-      fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px',
-      cursor: disabled ? 'not-allowed' : 'pointer', transition:'background 0.2s',
-    },
-  }, text);
-  if (!disabled) el.addEventListener('click', onclick);
-  return el;
-}
-
 function iconBtn(symbol, color, onclick) {
-  const el = h('button', {
-    style: { background:'none', border:`1px solid ${color}44`, borderRadius:'6px', color, padding:'4px 8px', cursor:'pointer', fontSize:'14px', transition:'background 0.2s', flexShrink:'0' }
-  }, symbol);
+  const el = h('button', { style: { background:'none', border:`1px solid ${color}44`, borderRadius:'6px', color, padding:'4px 8px', cursor:'pointer', fontSize:'14px', transition:'background 0.2s', flexShrink:'0' } }, symbol);
   el.addEventListener('mouseenter', () => el.style.background = color+'22');
   el.addEventListener('mouseleave', () => el.style.background = 'none');
   el.addEventListener('click', onclick);
   return el;
 }
 
-function styledInput(type, placeholder, sig, extraStyle={}) {
-  const el = h('input', { type, placeholder, style: {
-    width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'8px',
-    color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'10px 12px', outline:'none',
-    ...extraStyle,
-  }});
-  el.value = sig.get();
-  el.addEventListener('input', () => sig.set(el.value));
-  el.addEventListener('focus', () => el.style.borderColor = C.accent+'88');
-  el.addEventListener('blur',  () => el.style.borderColor = C.border);
-  return el;
-}
-
-// ── Screens ───────────────────────────────────────────────────────────────────
 function renderApiKeyScreen() {
   const inp = h('input', { type:'password', placeholder:'sk-ant-...', style: {
     width:'100%', background:'#0f0e0c', border:`1px solid ${C.border}`, borderRadius:'8px',
@@ -213,31 +200,25 @@ function renderApiKeyScreen() {
   }});
   inp.addEventListener('focus', () => inp.style.borderColor = C.accent+'88');
   inp.addEventListener('blur',  () => inp.style.borderColor = C.border);
-  inp.addEventListener('input', () => {
-    apiKeyInput.value = inp.value;
-    continueBtn.style.background = inp.value.startsWith('sk-') ? C.accent : C.border;
-    continueBtn.style.color = inp.value.startsWith('sk-') ? '#1a1600' : C.muted;
-    continueBtn.style.cursor = inp.value.startsWith('sk-') ? 'pointer' : 'not-allowed';
-  });
-  const save = () => {
-    const v = inp.value.trim();
-    if (v.startsWith('sk-')) { localStorage.setItem('meb_apikey', v); apiKey.set(v); }
-  };
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
-  inp.addEventListener('input', () => { apiKeyInput.value = inp.value; });
-
   const continueBtn = h('button', { style: {
     width:'100%', padding:'11px', background:C.border, color:C.muted,
     border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'14px', cursor:'not-allowed',
   }}, 'Continue');
+  inp.addEventListener('input', () => {
+    apiKeyInput.value = inp.value;
+    const ok = inp.value.startsWith('sk-');
+    continueBtn.style.background = ok ? C.accent : C.border;
+    continueBtn.style.color = ok ? '#1a1600' : C.muted;
+    continueBtn.style.cursor = ok ? 'pointer' : 'not-allowed';
+  });
+  const save = () => { const v = inp.value.trim(); if (v.startsWith('sk-')) { localStorage.setItem('meb_apikey', v); apiKey.set(v); } };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
   continueBtn.addEventListener('click', save);
-
   return h('div', { style:{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:'24px' }},
     h('div', { style:{ maxWidth:'400px', width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'14px', padding:'28px 24px' }},
       h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'24px', color:C.accent, marginBottom:'6px' }}, 'Mise en Bouche'),
       h('p', { style:{ color:C.muted, fontSize:'13px', marginBottom:'22px', lineHeight:'1.6' }}, "Enter your Anthropic API key to get started. It's stored only in this browser."),
-      inp,
-      continueBtn,
+      inp, continueBtn,
       h('p', { style:{ color:C.muted, fontSize:'11px', marginTop:'12px', textAlign:'center' }}, 'Key saved to localStorage — never sent anywhere except Anthropic.'),
     ),
   );
@@ -250,20 +231,12 @@ function renderApp() {
   const remaining = g.calories - tot.calories;
   const over = remaining < 0;
   const isLoading = loading.get();
-  const inp = inputVal.value;
-  const err = errMsg.get();
 
   // Header
-  const dateInput = h('input', { type:'date', value:date.get(), style:{
-    background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace",
-    fontSize:'12px', cursor:'pointer', outline:'none', padding:'0', marginTop:'4px',
-  }});
+  const dateInput = h('input', { type:'date', value:date.get(), style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', cursor:'pointer', outline:'none', padding:'0', marginTop:'4px' }});
   dateInput.addEventListener('change', e => date.set(e.target.value));
-
-  const serverKey = !!window.__ANTHROPIC_API_KEY__;
-  const apiKeyLink = serverKey ? h('span',{}) : h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
-  if (!serverKey) apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
-
+  const apiKeyLink = h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
+  apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
   const header = h('div', { style:{ marginBottom:'28px' }},
     h('div', { style:{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:'2px' }},
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
@@ -276,49 +249,33 @@ function renderApp() {
   );
 
   // Goals editor
-  let goalsEditor = null;
+  let goalsEditor = h('span',{});
   if (editGoals.get()) {
-    const calInp = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
-    const carbInp = h('input', { type:'number', value:String(g.carbs), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const calInp  = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const carbInp = h('input', { type:'number', value:String(g.carbs),    style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
-    saveBtn.addEventListener('click', () => {
-      const c = parseInt(calInp.value), cb = parseInt(carbInp.value);
-      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb }); editGoals.set(false); }
-    });
+    saveBtn.addEventListener('click', () => { const c=parseInt(calInp.value),cb=parseInt(carbInp.value); if(c>0&&cb>0){saveGoals({calories:c,carbs:cb});editGoals.set(false);} });
     const cancelBtn = h('button', { style:{ flex:'1', padding:'9px', background:'none', color:C.muted, border:`1px solid ${C.border}`, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
     cancelBtn.addEventListener('click', () => editGoals.set(false));
     goalsEditor = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
       h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'14px' }}, 'Daily Goals'),
       h('div', { style:{ display:'flex', gap:'12px', marginBottom:'12px' }},
-        h('div', { style:{ flex:'1' }},
-          h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'),
-          calInp,
-        ),
-        h('div', { style:{ flex:'1' }},
-          h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'),
-          carbInp,
-        ),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'), calInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'), carbInp),
       ),
       h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
     );
   }
 
-  // Summary card
-  const editGoalsBtn = h('button', { style:{ marginTop:'10px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }},
-    editGoals.get() ? 'cancel' : 'edit goals'
-  );
+  // Summary
+  const editGoalsBtn = h('button', { style:{ marginTop:'10px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, editGoals.get() ? 'cancel' : 'edit goals');
   editGoalsBtn.addEventListener('click', () => editGoals.set(v => !v));
-
   const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px' }},
     h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
       h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
-        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }},
-          over ? `${Math.abs(Math.round(remaining))} over` : `${Math.round(remaining)} left`
-        ),
-        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent }},
-          Math.round(tot.calories), h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')
-        ),
+        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }}, over ? `${Math.abs(Math.round(remaining))} over` : `${Math.round(remaining)} left`),
+        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent }}, Math.round(tot.calories), h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
       ),
     ),
     macroBar('Calories', tot.calories, g.calories, C.calories),
@@ -328,81 +285,53 @@ function renderApp() {
     editGoalsBtn,
   );
 
-  // Meal input
-  const textarea = h('textarea', { placeholder:"Describe your meal… e.g. 'grilled salmon with roasted sweet potato and salad'", rows:'3', style:{
-    width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px',
-    color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px',
-    resize:'none', outline:'none', lineHeight:'1.5',
-  }});
-  textarea.value = inp;
-  textarea.addEventListener('input', e => inputVal.value = e.target.value);
-  textarea.addEventListener('focus', () => textarea.style.borderColor = C.accent+'88');
-  textarea.addEventListener('blur',  () => textarea.style.borderColor = C.border);
-  textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addMeal(); }});
-
-  const logBtn = h('button', { style:{
-    marginTop:'10px', width:'100%', padding:'12px', border:'none', borderRadius:'10px',
-    background: isLoading || !inputVal.value.trim() ? C.border : C.accent,
-    color: isLoading || !inputVal.value.trim() ? C.muted : '#1a1600',
-    fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px',
-    cursor: isLoading || !inputVal.value.trim() ? 'not-allowed' : 'pointer',
-  }}, isLoading ? 'Estimating…' : 'Log Meal');
+  // Meal input — stable ref
+  if (!refs.textarea) {
+    refs.textarea = h('textarea', { placeholder:"Describe your meal… e.g. 'grilled salmon with roasted sweet potato and salad'", rows:'3', style:{ width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px', resize:'none', outline:'none', lineHeight:'1.5' }});
+    refs.textarea.addEventListener('input', e => { inputVal.value = e.target.value; });
+    refs.textarea.addEventListener('focus', () => refs.textarea.style.borderColor = C.accent+'88');
+    refs.textarea.addEventListener('blur',  () => refs.textarea.style.borderColor = C.border);
+    refs.textarea.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addMeal(); }});
+  }
+  const logBtn = h('button', { style:{ marginTop:'10px', width:'100%', padding:'12px', border:'none', borderRadius:'10px', background: isLoading || !inputVal.value.trim() ? C.border : C.accent, color: isLoading || !inputVal.value.trim() ? C.muted : '#1a1600', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'15px', cursor: isLoading || !inputVal.value.trim() ? 'not-allowed' : 'pointer' }}, isLoading ? 'Estimating…' : 'Log Meal');
   if (!isLoading && inputVal.value.trim()) logBtn.addEventListener('click', addMeal);
-
+  const err = errMsg.get();
   const inputSection = h('div', { style:{ marginBottom:'20px' }},
-    textarea,
+    refs.textarea,
     err ? h('div', { style:{ color:C.danger, fontSize:'12px', marginTop:'6px', fontFamily:"'DM Mono',monospace" }}, err) : h('span',{}),
     logBtn,
   );
 
   // Analysis panel
-  let analysisPanel = null;
+  let analysisPanel = h('span',{});
   if (tm.length > 0) {
-    const toggleBtn = h('button', { style:{
-      width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`,
-      borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500',
-      fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-    }}, '✂️ ', analysisOpen.get() ? 'Hide Analysis' : 'Where can I cut calories?');
-    toggleBtn.addEventListener('click', () => {
-      if (analysisOpen.get()) analysisOpen.set(false);
-      else runAnalysis();
-    });
-
-    let panelContent = null;
-    if (analysisOpen.get()) {
-      const al = analysis.get();
-      const aLoad = analysisLoading.get();
+    const aOpen = analysisOpen.get();
+    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '✂️ ', aOpen ? 'Hide Analysis' : 'Where can I cut calories?');
+    toggleBtn.addEventListener('click', () => { if (aOpen) analysisOpen.set(false); else runAnalysis(); });
+    let panelContent = h('span',{});
+    if (aOpen) {
+      const al = analysis.get(); const aLoad = analysisLoad.get();
       let inner;
-      if (aLoad) {
-        inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Analysing your meals…');
-      } else if (al?.error) {
-        inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
-      } else if (al) {
+      if (aLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Analysing your meals…');
+      else if (al?.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
+      else if (al) {
         const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.accent+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-run analysis');
         rerun.addEventListener('click', runAnalysis);
         inner = h('div', {},
           h('div', { style:{ marginBottom:'14px' }},
             h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent, marginBottom:'8px' }}, 'Best Cut'),
             h('div', { style:{ background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.accent}33`, display:'flex', gap:'12px', alignItems:'flex-start' }},
-              h('div', { style:{ flex:'1' }},
-                h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal),
-                h('div', { style:{ color:C.muted }}, al.topCut.suggestion),
-              ),
+              h('div', { style:{flex:'1'}}, h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal), h('div', { style:{ color:C.muted }}, al.topCut.suggestion)),
               h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
             ),
           ),
           al.otherTips?.length ? h('div', { style:{ marginBottom:'14px' }},
             h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'8px' }}, 'Other Ideas'),
             h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px' }},
-              ...al.otherTips.map(tip =>
-                h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
-                  h('div', { style:{ flex:'1' }},
-                    h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal),
-                    h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion),
-                  ),
-                  h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
-                )
-              ),
+              ...al.otherTips.map(tip => h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                h('div', { style:{flex:'1'}}, h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal), h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion)),
+                h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
+              ))
             ),
           ) : h('span',{}),
           h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'12px', marginTop:'4px', color:C.muted, fontStyle:'italic', fontSize:'12px' }}, al.summary),
@@ -411,7 +340,49 @@ function renderApp() {
       }
       panelContent = h('div', { style:{ marginTop:'10px', background:C.analysis, border:`1px solid ${C.accent}33`, borderRadius:'10px', padding:'16px 18px', fontSize:'13px', lineHeight:'1.6' }}, inner || h('span',{}));
     }
-    analysisPanel = h('div', { style:{ marginBottom:'24px' }}, toggleBtn, panelContent || h('span',{}));
+    analysisPanel = h('div', { style:{ marginBottom:'24px' }}, toggleBtn, panelContent);
+  }
+
+  // Effect panel
+  let effectPanel = h('span',{});
+  if (tm.length > 0) {
+    const eOpen = effectOpen.get(); const eResult = effectResult.get(); const eLoad = effectLoad.get();
+    const eToggle = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.fat}66`, borderRadius:'10px', color:C.fat, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '⚖️ ', eOpen ? 'Hide Weight Effect' : 'Calculate weight effect');
+    eToggle.addEventListener('click', () => { if (eOpen) effectOpen.set(false); else runEffect(); });
+    let eContent = h('span',{});
+    if (eOpen) {
+      let inner;
+      if (eLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Calculating…');
+      else if (eResult?.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't calculate. Try again.");
+      else if (eResult) {
+        const isDeficit = eResult.deficit > 0;
+        const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.fat+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-calculate');
+        rerun.addEventListener('click', runEffect);
+        inner = h('div', {},
+          h('div', { style:{ display:'flex', gap:'12px', marginBottom:'14px', flexWrap:'wrap' }},
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.border}`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, 'Your TDEE'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color:C.text }}, eResult.tdee),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal/day'),
+            ),
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.border}`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, isDeficit ? 'Deficit' : 'Surplus'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color: isDeficit ? C.fat : C.danger }}, Math.abs(eResult.deficit)),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal/day'),
+            ),
+            h('div', { style:{ flex:'1', background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${isDeficit ? C.fat : C.danger}44`, textAlign:'center' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'6px' }}, isDeficit ? 'Loss/week' : 'Gain/week'),
+              h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'20px', color: isDeficit ? C.fat : C.danger }}, (eResult.weeklyLossKg > 0 ? '-' : '+') + Math.abs(eResult.weeklyLossKg).toFixed(2)),
+              h('div', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kg'),
+            ),
+          ),
+          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.6', borderTop:`1px solid ${C.border}`, paddingTop:'12px' }}, eResult.assessment),
+          rerun,
+        );
+      }
+      eContent = h('div', { style:{ marginTop:'10px', background:C.analysis, border:`1px solid ${C.fat}33`, borderRadius:'10px', padding:'16px 18px', fontSize:'13px', lineHeight:'1.6' }}, inner || h('span',{}));
+    }
+    effectPanel = h('div', { style:{ marginBottom:'24px' }}, eToggle, eContent);
   }
 
   // Meal list
@@ -420,10 +391,8 @@ function renderApp() {
     mealList = h('div', { style:{ textAlign:'center', color:C.muted, fontStyle:'italic', padding:'40px 0', fontSize:'14px' }}, 'No meals logged yet for this day.');
   } else {
     mealList = h('div', {},
-      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'12px' }},
-        tm.length + ' meal' + (tm.length !== 1 ? 's' : '')
-      ),
-      ...([...tm].reverse().map(meal => {
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'12px' }}, tm.length + ' meal' + (tm.length !== 1 ? 's' : '')),
+      ...[...tm].reverse().map(meal => {
         const card = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', padding:'14px 16px', marginBottom:'10px', display:'flex', gap:'12px', alignItems:'flex-start', transition:'border-color 0.2s' }},
           h('div', { style:{ flex:'1', minWidth:'0' }},
             h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'15px', color:C.text, marginBottom:'6px', lineHeight:'1.3' }}, meal.description),
@@ -436,39 +405,24 @@ function renderApp() {
             meal.note ? h('div', { style:{ fontSize:'11px', color:C.muted, marginTop:'5px', fontStyle:'italic' }}, meal.note) : h('span',{}),
           ),
           h('div', { style:{ display:'flex', gap:'6px', flexShrink:'0' }},
-            iconBtn('↻', C.accent, () => inputVal.value = meal.description),
+            iconBtn('↻', C.accent, () => { inputVal.value = meal.description; if(refs.textarea) refs.textarea.value = meal.description; }),
             iconBtn('×', C.danger, () => saveMeals(meals.get().filter(m => m.id !== meal.id))),
           ),
         );
         card.addEventListener('mouseenter', () => card.style.borderColor = C.accent+'55');
         card.addEventListener('mouseleave', () => card.style.borderColor = C.border);
         return card;
-      })),
+      }),
     );
   }
 
   return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
     h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
-      header,
-      goalsEditor || h('span',{}),
-      summary,
-      inputSection,
-      analysisPanel || h('span',{}),
-      mealList,
+      header, goalsEditor, summary, inputSection, analysisPanel, effectPanel, mealList,
     ),
   );
 }
 
-async function addMeal() {
-  const desc = inputVal.value.trim();
-  if (!desc || loading.get()) return;
-  const nutrition = await estimateMeal(desc);
-  if (!nutrition) return;
-  saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
-  inputVal.value = '';
-}
-
-// ── Boot ──────────────────────────────────────────────────────────────────────
 mount(document.getElementById('root'), () =>
   apiKey.get() ? renderApp() : renderApiKeyScreen()
 );
