@@ -163,7 +163,7 @@ async function runEffect() {
     const now = new Date();
     const hour = now.getHours();
     const minute = now.getMinutes();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timeStr = (hour % 12 || 12) + ':' + String(minute).padStart(2,'0') + (hour < 12 ? ' AM' : ' PM');
     const cutoffHour = 20; // 8pm
     const hoursLeft = Math.max(0, cutoffHour - hour - (minute / 60));
     const dayComplete = hoursLeft === 0;
@@ -351,7 +351,7 @@ function renderApp() {
       const al = analysis.get(); const aLoad = analysisLoad.get();
       let inner;
       if (aLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Analysing your meals…');
-      else if (al?.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
+      else if (al && al.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
       else if (al) {
         const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.accent+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-run analysis');
         rerun.addEventListener('click', runAnalysis);
@@ -363,7 +363,7 @@ function renderApp() {
               h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
             ),
           ),
-          al.otherTips?.length ? h('div', { style:{ marginBottom:'14px' }},
+          al.otherTips && al.otherTips.length ? h('div', { style:{ marginBottom:'14px' }},
             h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'8px' }}, 'Other Ideas'),
             h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px' }},
               ...al.otherTips.map(tip => h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
@@ -391,7 +391,7 @@ function renderApp() {
     if (eOpen) {
       let inner;
       if (eLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Calculating…');
-      else if (eResult?.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't calculate. Try again.");
+      else if (eResult && eResult.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't calculate. Try again.");
       else if (eResult) {
         const isDeficit = eResult.deficit > 0;
         const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.fat+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-calculate');
@@ -473,9 +473,13 @@ function renderApp() {
   );
 }
 
-mount(document.getElementById('root'), () =>
-  apiKey.get() ? renderApp() : renderApiKeyScreen()
-);
+try {
+  mount(document.getElementById('root'), () =>
+    apiKey.get() ? renderApp() : renderApiKeyScreen()
+  );
+} catch(e) {
+  document.getElementById('root').innerHTML = '<div style="color:#e07b54;padding:32px;font-family:monospace;font-size:13px;white-space:pre-wrap;">Error: ' + e.message + '\n\n' + e.stack + '</div>';
+}
 </script>
 </body>
 </html>
