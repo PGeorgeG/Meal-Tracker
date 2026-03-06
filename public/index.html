@@ -75,7 +75,7 @@ const C = {
   fat:'#8fc47a', calories:'#e8c547', danger:'#c94f4f', analysis:'#161814',
 };
 const todayStr = () => new Date().toISOString().split('T')[0];
-const DEFAULT_GOALS = { calories: 2000, carbs: 250 };
+const DEFAULT_GOALS = { calories: 2000, carbs: 250, protein: 166 };
 
 const apiKey        = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
 const meals         = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
@@ -93,11 +93,31 @@ const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
 const neverEat      = signal(JSON.parse(localStorage.getItem('meb_never') || '[]'));
+const DEFAULT_PROFILE = { sex:'male', age:62, weightKg:104, heightCm:185, activity:'moderate' };
+const profile       = signal(JSON.parse(localStorage.getItem('meb_profile') || 'null') || DEFAULT_PROFILE);
+const showProfile   = signal(false);
+const lateNudge     = signal(false);
 const neverInput    = { value: '' };
 const showNever     = signal(false);
 const remakeResult  = signal(null);
 const remakeLoading = signal(false);
 const fillerItems   = signal([]);  // [{label, checked}]
+
+function saveProfile(p) { profile.set(p); localStorage.setItem('meb_profile', JSON.stringify(p)); }
+
+function calcTDEE(p) {
+  // Mifflin-St Jeor BMR
+  var bmr = p.sex === 'male'
+    ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5
+    : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
+  var multipliers = { sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9 };
+  return Math.round(bmr * (multipliers[p.activity] || 1.55));
+}
+
+function profileSummary(p) {
+  var activityLabels = { sedentary:'sedentary', light:'lightly active', moderate:'moderately active', active:'very active', very_active:'extra active' };
+  return p.sex + ', ' + p.age + ' years old, ' + p.weightKg + ' kg, ' + p.heightCm + ' cm, ' + (activityLabels[p.activity] || p.activity) + ' (TDEE ~' + calcTDEE(p) + ' kcal/day)';
+}
 
 function saveNever(list) { neverEat.set(list); localStorage.setItem('meb_never', JSON.stringify(list)); }
 
@@ -143,12 +163,13 @@ async function estimateMeal(desc) {
 async function runAnalysis() {
   const list = todayMeals.get();
   if (!list.length) return;
+  const latest = list[list.length - 1];
   analysisLoad.set(true); analysisOpen.set(true); analysis.set(null);
   try {
-    const mealList = list.map(m => `- ${m.description}: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`).join('\n');
+    const mealList = '- ' + latest.description + ': ' + latest.calories + ' kcal, ' + latest.protein + 'g protein, ' + latest.carbs + 'g carbs, ' + latest.fat + 'g fat';
     const text = await callClaude(
       'You are a practical nutrition coach. Identify where calories could most easily be cut, prioritising \'empty calories\'. Also suggest up to 3 ways to maximise how long this meal keeps hunger at bay — this can mean increasing an existing ingredient already in the meal (e.g. more chicken, extra eggs) OR adding something new. Prioritise high-protein and high-fibre options that slow digestion and stabilise blood sugar. Be specific, include a brief reason, and keep calorie cost modest. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"specific swap or reduction","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one sentence identifying any empty calorie sources, or null","fillerSuggestions":["specific suggestion + why it helps","specific suggestion + why it helps","specific suggestion + why it helps"],"summary":"one sentence"}',
-      "Today's meals:\n" + mealList + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories?',
+      'Most recent meal:\n' + mealList + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories in this meal?',
       600
     );
     const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
@@ -164,17 +185,23 @@ async function runRemake() {
   const al = analysis.get();
   if (!al) return;
   remakeLoading.set(true); remakeResult.set(null);
-  const mealDescs = todayMeals.get().map(function(m) { return m.description; }).join('; ');
+  const latestMeal = todayMeals.get()[todayMeals.get().length - 1];
+  const mealDescs = latestMeal ? latestMeal.description : '';
   const tips = [al.topCut.suggestion].concat((al.otherTips || []).map(function(t) { return t.suggestion; })).join('; ');
   const emptyCals = al.emptyCals || '';
   const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
   try {
     const text = await callClaude(
-      'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return ONLY the plain rewritten meal description as a single line — no explanation, no labels, no extra punctuation. Write it exactly as someone would type it into a meal log.',
-      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
+      'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return JSON only, no markdown: {"description":"plain meal description as someone would type into a meal log","calories":estimated_calorie_count_as_number}',
+      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Person: ' + profileSummary(profile.get()) + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
       200
     );
-    remakeResult.set(text.trim());
+    try {
+      const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
+      remakeResult.set(parsed);
+    } catch(e) {
+      remakeResult.set({ description: text.trim(), calories: null });
+    }
   } catch(e) { remakeResult.set('Could not generate suggestion. Try again.'); }
   finally { remakeLoading.set(false); }
 }
@@ -196,7 +223,7 @@ async function runEffect() {
       : 'About ' + hoursLeft.toFixed(1) + ' hours left in the eating window (stops at 8pm).';
     const mealList = todayMeals.get().map(function(m) { return m.description; }).join('; ');
     const neverStr = neverEat.get().length ? ' Foods this person will never eat: ' + neverEat.get().join(', ') + '.' : '';
-    const userMsg = 'Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).' + neverStr + ' ' +
+    const userMsg = 'Person: ' + profileSummary(profile.get()) + '.' + neverStr + ' ' +
       'Current time: ' + timeStr + '. ' + windowMsg + ' ' +
       'Meals so far: ' + mealList + '. ' +
       'Totals so far: ' + Math.round(tot.calories) + ' kcal, ' +
@@ -227,6 +254,13 @@ async function addMeal() {
   saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
   inputVal.value = '';
   if (refs.textarea) refs.textarea.value = '';
+  // Late meal nudge
+  const now = new Date();
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (mins >= 18 * 60 + 30 && nutrition.calories > 200) {
+    lateNudge.set(true);
+    setTimeout(function() { lateNudge.set(false); }, 8000);
+  }
 }
 
 function macroBar(label, value, max, color) {
@@ -310,6 +344,7 @@ function renderApp() {
   let goalsEditor = h('span',{});
   if (editGoals.get()) {
     const calInp  = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const protInp = h('input', { type:'number', value:String(g.protein || 166), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const carbInp = h('input', { type:'number', value:String(g.carbs),    style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
     saveBtn.addEventListener('click', () => { const c=parseInt(calInp.value),cb=parseInt(carbInp.value); if(c>0&&cb>0){saveGoals({calories:c,carbs:cb});editGoals.set(false);} });
@@ -320,6 +355,7 @@ function renderApp() {
       h('div', { style:{ display:'flex', gap:'12px', marginBottom:'12px' }},
         h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'), calInp),
         h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'), carbInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.protein, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Protein (g)'), protInp),
       ),
       h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
     );
@@ -331,20 +367,96 @@ function renderApp() {
 
   const neverToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showNever.get() ? 'hide never-eat list' : 'never-eat list (' + neverEat.get().length + ')');
   neverToggle.addEventListener('click', () => showNever.set(v => !v));
+
+  const profileToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showProfile.get() ? 'hide profile' : 'profile');
+  profileToggle.addEventListener('click', () => showProfile.set(v => !v));
   const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px' }},
     h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
       h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
-        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }}, over ? `${Math.abs(Math.round(remaining))} over` : `${Math.round(remaining)} left`),
+        h('div', { style:{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'2px' }},
+          h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }}, over ? Math.abs(Math.round(remaining)) + ' kcal over' : Math.round(remaining) + ' kcal left'),
+          (() => {
+            const protTarget = g.protein || 166;
+            const protLeft = protTarget - tot.protein;
+            const protOver = protLeft < 0;
+            return h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: protOver ? C.fat : C.protein }}, protOver ? Math.abs(Math.round(protLeft)) + 'g protein over' : Math.round(protLeft) + 'g protein to go');
+          })(),
+        ),
         h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent }}, Math.round(tot.calories), h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
       ),
     ),
     macroBar('Calories', tot.calories, g.calories, C.calories),
-    macroBar('Protein',  tot.protein,  150,         C.protein),
+    macroBar('Protein',  tot.protein,  g.protein || 166, C.protein),
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
     macroBar('Fat',      tot.fat,      65,          C.fat),
-    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px' }}, editGoalsBtn, neverToggle),
+    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}, editGoalsBtn, neverToggle, profileToggle),
   );
+
+  // Profile panel
+  let profilePanel = h('span',{});
+  if (showProfile.get()) {
+    const p = profile.get();
+    const fields = [
+      { key:'sex', label:'Sex', type:'select', options:[['male','Male'],['female','Female']] },
+      { key:'age', label:'Age', type:'number', min:10, max:120 },
+      { key:'weightKg', label:'Weight (kg)', type:'number', min:30, max:300 },
+      { key:'heightCm', label:'Height (cm)', type:'number', min:100, max:250 },
+      { key:'activity', label:'Activity', type:'select', options:[
+        ['sedentary','Sedentary (desk job, little exercise)'],
+        ['light','Lightly active (exercise 1-3x/week)'],
+        ['moderate','Moderately active (exercise 3-5x/week)'],
+        ['active','Very active (exercise 6-7x/week)'],
+        ['very_active','Extra active (physical job + exercise)'],
+      ]},
+    ];
+    const inputs = {};
+    const fieldEls = fields.map(function(f) {
+      var inp;
+      var inputStyle = { width:'100%', background:C.bg, border:'1px solid ' + C.border, borderRadius:'8px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', padding:'8px 10px', outline:'none' };
+      if (f.type === 'select') {
+        inp = h('select', { style: Object.assign({}, inputStyle, { cursor:'pointer' }) },
+          ...f.options.map(function(opt) {
+            var o = h('option', { value: opt[0] }, opt[1]);
+            if (p[f.key] === opt[0]) o.selected = true;
+            return o;
+          })
+        );
+      } else {
+        inp = h('input', { type:'number', value: String(p[f.key]), style: inputStyle });
+      }
+      inp.addEventListener('focus', function() { inp.style.borderColor = C.accent + '88'; });
+      inp.addEventListener('blur',  function() { inp.style.borderColor = C.border; });
+      inputs[f.key] = inp;
+      return h('div', { style:{ flex:'1', minWidth:'120px' }},
+        h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'4px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, f.label),
+        inp,
+      );
+    });
+    const saveBtn = h('button', { style:{ padding:'9px 18px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
+    saveBtn.addEventListener('click', function() {
+      var updated = {
+        sex: inputs.sex.value,
+        age: parseInt(inputs.age.value) || p.age,
+        weightKg: parseFloat(inputs.weightKg.value) || p.weightKg,
+        heightCm: parseFloat(inputs.heightCm.value) || p.heightCm,
+        activity: inputs.activity.value,
+      };
+      saveProfile(updated);
+      showProfile.set(false);
+    });
+    const cancelBtn = h('button', { style:{ padding:'9px 18px', background:'none', color:C.muted, border:'1px solid ' + C.border, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
+    cancelBtn.addEventListener('click', function() { showProfile.set(false); });
+    const tdee = calcTDEE(p);
+    profilePanel = h('div', { style:{ background:C.card, border:'1px solid ' + C.accent + '44', borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:'14px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent }}, 'My Profile'),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, 'TDEE: ~' + tdee + ' kcal/day'),
+      ),
+      h('div', { style:{ display:'flex', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}, ...fieldEls),
+      h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
+    );
+  }
 
   // Never-eat panel
   let neverPanel = h('span',{});
@@ -411,7 +523,7 @@ function renderApp() {
   let analysisPanel = h('span',{});
   if (tm.length > 0) {
     const aOpen = analysisOpen.get();
-    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '✂️ ', aOpen ? 'Hide Analysis' : 'Possible calorie cuts');
+    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '🥗 ', aOpen ? 'Hide Optimisation' : 'Optimise this meal');
     toggleBtn.addEventListener('click', () => { if (aOpen) analysisOpen.set(false); else runAnalysis(); });
     let panelContent = h('span',{});
     if (aOpen) {
@@ -472,11 +584,13 @@ function renderApp() {
             remakeBtn.addEventListener('click', runRemake);
             const remakeBox = rResult ? h('div', { style:{ marginTop:'10px', background:C.bg, border:`1px solid ${C.accent}44`, borderRadius:'8px', padding:'12px 14px' }},
               h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:C.muted, marginBottom:'8px' }}, 'Suggested meal — tap to copy'),
-              h('div', { style:{ color:C.text, fontSize:'14px', lineHeight:'1.6', marginBottom:'10px', cursor:'pointer' }}, rResult),
+              h('div', { style:{ color:C.text, fontSize:'14px', lineHeight:'1.6', marginBottom:'6px' }}, rResult.description || rResult),
+              rResult.calories ? h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color:C.calories, marginBottom:'10px' }}, '~' + rResult.calories + ' kcal') : h('span',{}),
               (() => {
+                const copyText = rResult.description || rResult;
                 const copyBtn = h('button', { style:{ background:'none', border:`1px solid ${C.accent}44`, borderRadius:'6px', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', padding:'5px 12px', cursor:'pointer' }}, 'Copy');
                 copyBtn.addEventListener('click', function() {
-                  navigator.clipboard.writeText(rResult).then(function() {
+                  navigator.clipboard.writeText(copyText).then(function() {
                     copyBtn.textContent = 'Copied!';
                     setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
                   }).catch(function() {
@@ -500,7 +614,7 @@ function renderApp() {
   let effectPanel = h('span',{});
   if (tm.length > 0) {
     const eOpen = effectOpen.get(); const eResult = effectResult.get(); const eLoad = effectLoad.get();
-    const eToggle = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.fat}66`, borderRadius:'10px', color:C.fat, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '⚖️ ', eOpen ? 'Hide Weight Effect' : 'Calculate weight effect');
+    const eToggle = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.fat}66`, borderRadius:'10px', color:C.fat, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '📊 ', eOpen ? 'Hide Tracking' : 'How is my day tracking?');
     eToggle.addEventListener('click', () => { if (eOpen) effectOpen.set(false); else runEffect(); });
     let eContent = h('span',{});
     if (eOpen) {
@@ -583,7 +697,15 @@ function renderApp() {
 
   return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
     h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
-      header, goalsEditor, summary, neverPanel, inputSection, analysisPanel, effectPanel, mealList,
+      header, goalsEditor, summary, profilePanel, neverPanel, inputSection,
+      lateNudge.get() ? h('div', { style:{ background:'#1a1510', border:'1px solid ' + C.accent + '55', borderRadius:'10px', padding:'12px 16px', marginBottom:'16px', display:'flex', gap:'10px', alignItems:'flex-start' }},
+        h('span', { style:{ fontSize:'18px', flexShrink:'0' }}, '🌙'),
+        h('div', {},
+          h('div', { style:{ color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'3px' }}, 'Late meal'),
+          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.5' }}, 'Phil, you asked me to do this, so… it’s after 6:30pm. Consider keeping this light. Front-loading calories earlier in the day supports better energy and weight management.'),
+        ),
+      ) : h('span',{}),
+      analysisPanel, effectPanel, mealList,
     ),
   );
 }
