@@ -92,7 +92,6 @@ const effectResult  = signal(null);
 const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
-const exerciseCal   = signal(parseInt(localStorage.getItem('meb_exercise')||'0'));
 const neverEat      = signal(JSON.parse(localStorage.getItem('meb_never') || '[]'));
 const neverInput    = { value: '' };
 const showNever     = signal(false);
@@ -100,18 +99,11 @@ const remakeResult  = signal(null);
 const remakeLoading = signal(false);
 const fillerItems   = signal([]);  // [{label, checked}]
 
-function saveExercise(v) { exerciseCal.set(v); localStorage.setItem('meb_exercise', String(v)); }
 function saveNever(list) { neverEat.set(list); localStorage.setItem('meb_never', JSON.stringify(list)); }
 
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
 function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
 
-// Reset exercise calories when date changes
-effect(() => {
-  const d = date.get();
-  const saved = localStorage.getItem('meb_exercise_date');
-  if (saved !== d) { exerciseCal.set(0); localStorage.setItem('meb_exercise', '0'); localStorage.setItem('meb_exercise_date', d); }
-});
 const todayMeals = computed(() => meals.get().filter(m => m.date === date.get()));
 const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
   calories: acc.calories + m.calories,
@@ -352,21 +344,6 @@ function renderApp() {
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
     macroBar('Fat',      tot.fat,      65,          C.fat),
     h('div', { style:{ display:'flex', alignItems:'center', gap:'12px' }}, editGoalsBtn, neverToggle),
-    // Exercise calories row
-    h('div', { style:{ marginTop:'14px', paddingTop:'12px', borderTop:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:'10px' }},
-      h('span', { style:{ fontSize:'13px', color:C.muted, flex:'1' }}, '🏃 Exercise burned'),
-      (() => {
-        const exInp = h('input', { type:'number', placeholder:'0', value: exerciseCal.get() || '', style:{
-          width:'80px', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'6px',
-          color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'13px', padding:'5px 8px', outline:'none', textAlign:'right',
-        }});
-        exInp.addEventListener('focus', () => exInp.style.borderColor = C.accent+'88');
-        exInp.addEventListener('blur',  () => { exInp.style.borderColor = C.border; const v = parseInt(exInp.value)||0; saveExercise(v); });
-        exInp.addEventListener('change', () => { const v = parseInt(exInp.value)||0; saveExercise(v); });
-        return exInp;
-      })(),
-      h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal'),
-    ),
   );
 
   // Never-eat panel
