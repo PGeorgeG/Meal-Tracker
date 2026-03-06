@@ -93,6 +93,8 @@ const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
 const exerciseCal   = signal(parseInt(localStorage.getItem('meb_exercise')||'0'));
+const remakeResult  = signal(null);
+const remakeLoading = signal(false);
 
 function saveExercise(v) { exerciseCal.set(v); localStorage.setItem('meb_exercise', String(v)); }
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
@@ -154,6 +156,24 @@ async function runAnalysis() {
     analysis.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
   } catch { analysis.set({ error: true }); }
   finally { analysisLoad.set(false); }
+}
+
+async function runRemake() {
+  const al = analysis.get();
+  if (!al) return;
+  remakeLoading.set(true); remakeResult.set(null);
+  const meals = todayMeals.get().map(function(m) { return m.description; }).join('; ');
+  const tips = [al.topCut.suggestion].concat((al.otherTips || []).map(function(t) { return t.suggestion; })).join('; ');
+  const emptyCals = al.emptyCals || '';
+  try {
+    const text = await callClaude(
+      'You are a meal planning assistant. Given a meal description and improvement suggestions, rewrite the meal description applying those suggestions. Return ONLY the plain rewritten meal description as a single line of text — no explanation, no labels, no punctuation other than commas. Write it exactly as someone would type it into a meal log.',
+      'Original meal(s): ' + meals + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + '. Rewrite the meal applying these changes.',
+      200
+    );
+    remakeResult.set(text.trim());
+  } catch(e) { remakeResult.set('Could not generate suggestion. Try again.'); }
+  finally { remakeLoading.set(false); }
 }
 
 async function runEffect() {
@@ -390,6 +410,29 @@ function renderApp() {
             h('span', { style:{ color:C.muted }}, al.emptyCals),
           ) : h('span',{}),
           h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'12px', marginTop:'4px', color:C.muted, fontStyle:'italic', fontSize:'12px' }}, al.summary),
+          (() => {
+            const rResult = remakeResult.get();
+            const rLoad = remakeLoading.get();
+            const remakeBtn = h('button', { style:{ marginTop:'14px', width:'100%', padding:'10px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'8px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, rLoad ? 'Remaking…' : '✨ Remake this meal with your advice');
+            remakeBtn.addEventListener('click', runRemake);
+            const remakeBox = rResult ? h('div', { style:{ marginTop:'10px', background:C.bg, border:`1px solid ${C.accent}44`, borderRadius:'8px', padding:'12px 14px' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:C.muted, marginBottom:'8px' }}, 'Suggested meal — tap to copy'),
+              h('div', { style:{ color:C.text, fontSize:'14px', lineHeight:'1.6', marginBottom:'10px', cursor:'pointer' }}, rResult),
+              (() => {
+                const copyBtn = h('button', { style:{ background:'none', border:`1px solid ${C.accent}44`, borderRadius:'6px', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', padding:'5px 12px', cursor:'pointer' }}, 'Copy');
+                copyBtn.addEventListener('click', function() {
+                  navigator.clipboard.writeText(rResult).then(function() {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(function() { copyBtn.textContent = 'Copy'; }, 2000);
+                  }).catch(function() {
+                    copyBtn.textContent = 'Copy failed';
+                  });
+                });
+                return copyBtn;
+              })(),
+            ) : h('span',{});
+            return h('div', {}, remakeBtn, remakeBox);
+          })(),
           rerun,
         );
       }
