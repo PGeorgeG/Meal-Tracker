@@ -380,10 +380,10 @@ function renderApp() {
             const protTarget = g.protein || 166;
             const protLeft = protTarget - tot.protein;
             const protOver = protLeft < 0;
-            return h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: protOver ? C.fat : C.protein }}, protOver ? Math.abs(Math.round(protLeft)) + 'g protein over' : Math.round(protLeft) + 'g protein to go');
+            return h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: protOver ? C.fat : C.protein, whiteSpace:'nowrap' }}, protOver ? Math.abs(Math.round(protLeft)) + 'g protein over' : Math.round(protLeft) + 'g protein to go');
           })(),
         ),
-        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent }}, Math.round(tot.calories), h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
+        h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent, whiteSpace:'nowrap' }}, Math.round(tot.calories), h('span', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
       ),
     ),
     macroBar('Calories', tot.calories, g.calories, C.calories),
@@ -502,7 +502,7 @@ function renderApp() {
 
   // Meal input — stable ref
   if (!refs.textarea) {
-    refs.textarea = h('textarea', { placeholder:"Describe your meal… e.g. 'grilled salmon with roasted sweet potato and salad'", rows:'3', style:{ width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px', resize:'none', outline:'none', lineHeight:'1.5' }});
+    refs.textarea = h('textarea', { placeholder:"Describe your meal in plain English.", rows:'3', style:{ width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'14px', padding:'12px 14px', resize:'none', outline:'none', lineHeight:'1.5' }});
     refs.textarea.addEventListener('input', e => { inputVal.value = e.target.value; });
     refs.textarea.addEventListener('change', e => { inputVal.value = e.target.value; });
     refs.textarea.addEventListener('keyup', e => { inputVal.value = e.target.value; });
