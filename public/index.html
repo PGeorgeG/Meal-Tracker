@@ -93,10 +93,16 @@ const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
 const exerciseCal   = signal(parseInt(localStorage.getItem('meb_exercise')||'0'));
+const neverEat      = signal(JSON.parse(localStorage.getItem('meb_never') || '[]'));
+const neverInput    = { value: '' };
+const showNever     = signal(false);
 const remakeResult  = signal(null);
 const remakeLoading = signal(false);
+const fillerItems   = signal([]);  // [{label, checked}]
 
 function saveExercise(v) { exerciseCal.set(v); localStorage.setItem('meb_exercise', String(v)); }
+function saveNever(list) { neverEat.set(list); localStorage.setItem('meb_never', JSON.stringify(list)); }
+
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
 function saveGoals(g) { goals.set(g); localStorage.setItem('meb_goals', JSON.stringify(g)); }
 
@@ -149,11 +155,15 @@ async function runAnalysis() {
   try {
     const mealList = list.map(m => `- ${m.description}: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`).join('\n');
     const text = await callClaude(
-      'You are a practical nutrition coach. Identify where calories could most easily be cut, prioritising \'empty calories\' — calories that add little protein, fibre, or micronutrient value (e.g. cooking oils, sugary drinks, refined carbs, sauces, alcohol). Be specific and concise. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"specific swap or reduction","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one sentence identifying any empty calorie sources in today\'s meals, or \'None spotted\' if not applicable","summary":"one sentence"}',
-      "Today's meals:\n" + mealList + '\n\nWhere could I most easily cut calories?',
+      'You are a practical nutrition coach. Identify where calories could most easily be cut, prioritising \'empty calories\'. Also suggest up to 3 ways to maximise how long this meal keeps hunger at bay — this can mean increasing an existing ingredient already in the meal (e.g. more chicken, extra eggs) OR adding something new. Prioritise high-protein and high-fibre options that slow digestion and stabilise blood sugar. Be specific, include a brief reason, and keep calorie cost modest. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"specific swap or reduction","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one sentence identifying any empty calorie sources, or null","fillerSuggestions":["specific suggestion + why it helps","specific suggestion + why it helps","specific suggestion + why it helps"],"summary":"one sentence"}',
+      "Today's meals:\n" + mealList + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories?',
       600
     );
-    analysis.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
+    const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
+    analysis.set(parsed);
+    if (parsed.fillerSuggestions) {
+      fillerItems.set(parsed.fillerSuggestions.map(function(s) { return { label: s, checked: false }; }));
+    }
   } catch { analysis.set({ error: true }); }
   finally { analysisLoad.set(false); }
 }
@@ -162,13 +172,14 @@ async function runRemake() {
   const al = analysis.get();
   if (!al) return;
   remakeLoading.set(true); remakeResult.set(null);
-  const meals = todayMeals.get().map(function(m) { return m.description; }).join('; ');
+  const mealDescs = todayMeals.get().map(function(m) { return m.description; }).join('; ');
   const tips = [al.topCut.suggestion].concat((al.otherTips || []).map(function(t) { return t.suggestion; })).join('; ');
   const emptyCals = al.emptyCals || '';
+  const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
   try {
     const text = await callClaude(
-      'You are a meal planning assistant. Given a meal description and improvement suggestions, rewrite the meal description applying those suggestions. Return ONLY the plain rewritten meal description as a single line of text — no explanation, no labels, no punctuation other than commas. Write it exactly as someone would type it into a meal log.',
-      'Original meal(s): ' + meals + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + '. Rewrite the meal applying these changes.',
+      'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return ONLY the plain rewritten meal description as a single line — no explanation, no labels, no extra punctuation. Write it exactly as someone would type it into a meal log.',
+      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
       200
     );
     remakeResult.set(text.trim());
@@ -192,7 +203,8 @@ async function runEffect() {
       ? 'The eating window is closed (after 8pm) — this is the full day.'
       : 'About ' + hoursLeft.toFixed(1) + ' hours left in the eating window (stops at 8pm).';
     const mealList = todayMeals.get().map(function(m) { return m.description; }).join('; ');
-    const userMsg = 'Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day). ' +
+    const neverStr = neverEat.get().length ? ' Foods this person will never eat: ' + neverEat.get().join(', ') + '.' : '';
+    const userMsg = 'Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).' + neverStr + ' ' +
       'Current time: ' + timeStr + '. ' + windowMsg + ' ' +
       'Meals so far: ' + mealList + '. ' +
       'Totals so far: ' + Math.round(tot.calories) + ' kcal, ' +
@@ -324,6 +336,9 @@ function renderApp() {
   // Summary
   const editGoalsBtn = h('button', { style:{ marginTop:'10px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, editGoals.get() ? 'cancel' : 'edit goals');
   editGoalsBtn.addEventListener('click', () => editGoals.set(v => !v));
+
+  const neverToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showNever.get() ? 'hide never-eat list' : 'never-eat list (' + neverEat.get().length + ')');
+  neverToggle.addEventListener('click', () => showNever.set(v => !v));
   const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px' }},
     h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
       h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
@@ -336,7 +351,7 @@ function renderApp() {
     macroBar('Protein',  tot.protein,  150,         C.protein),
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
     macroBar('Fat',      tot.fat,      65,          C.fat),
-    editGoalsBtn,
+    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px' }}, editGoalsBtn, neverToggle),
     // Exercise calories row
     h('div', { style:{ marginTop:'14px', paddingTop:'12px', borderTop:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:'10px' }},
       h('span', { style:{ fontSize:'13px', color:C.muted, flex:'1' }}, '🏃 Exercise burned'),
@@ -353,6 +368,48 @@ function renderApp() {
       h('span', { style:{ fontSize:'12px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, 'kcal'),
     ),
   );
+
+  // Never-eat panel
+  let neverPanel = h('span',{});
+  if (showNever.get()) {
+    const neverList = neverEat.get();
+    if (!refs.neverInp) {
+      refs.neverInp = h('input', { type:'text', placeholder:'e.g. almond milk', style:{ flex:'1', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', padding:'8px 12px', outline:'none' }});
+      refs.neverInp.addEventListener('focus', () => refs.neverInp.style.borderColor = C.danger+'88');
+      refs.neverInp.addEventListener('blur',  () => refs.neverInp.style.borderColor = C.border);
+      refs.neverInp.addEventListener('input', e => { neverInput.value = e.target.value; });
+      refs.neverInp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          const v = refs.neverInp.value.trim().toLowerCase();
+          if (v && !neverEat.get().includes(v)) { saveNever([...neverEat.get(), v]); }
+          refs.neverInp.value = ''; neverInput.value = '';
+        }
+      });
+    }
+    const addBtn = h('button', { style:{ padding:'8px 14px', background:C.danger, color:'#fff', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer', flexShrink:'0' }}, 'Add');
+    addBtn.addEventListener('click', () => {
+      const v = refs.neverInp.value.trim().toLowerCase();
+      if (v && !neverEat.get().includes(v)) { saveNever([...neverEat.get(), v]); }
+      refs.neverInp.value = ''; neverInput.value = '';
+    });
+    neverPanel = h('div', { style:{ background:C.card, border:`1px solid ${C.danger}44`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.danger, marginBottom:'12px' }}, 'Never-eat list'),
+      h('div', { style:{ display:'flex', gap:'8px', marginBottom:'12px' }}, refs.neverInp, addBtn),
+      neverList.length ? h('div', { style:{ display:'flex', flexWrap:'wrap', gap:'6px' }},
+        ...neverList.map(food => {
+          const tag = h('div', { style:{ display:'flex', alignItems:'center', gap:'4px', background:C.bg, border:`1px solid ${C.danger}44`, borderRadius:'20px', padding:'3px 10px 3px 12px', fontSize:'12px', color:C.text }},
+            h('span', {}, food),
+            (() => {
+              const x = h('button', { style:{ background:'none', border:'none', color:C.danger, cursor:'pointer', fontSize:'14px', padding:'0 0 0 4px', lineHeight:'1' }}, '×');
+              x.addEventListener('click', () => saveNever(neverEat.get().filter(f => f !== food)));
+              return x;
+            })(),
+          );
+          return tag;
+        }),
+      ) : h('div', { style:{ color:C.muted, fontSize:'12px', fontStyle:'italic' }}, 'No foods added yet.'),
+    );
+  }
 
   // Meal input — stable ref
   if (!refs.textarea) {
@@ -413,6 +470,27 @@ function renderApp() {
           (() => {
             const rResult = remakeResult.get();
             const rLoad = remakeLoading.get();
+            const fItems = fillerItems.get();
+
+            // Filler checkboxes
+            const fillerSection = fItems.length ? h('div', { style:{ marginTop:'14px', borderTop:`1px solid ${C.border}`, paddingTop:'12px' }},
+              h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:C.muted, marginBottom:'8px' }}, 'Add to feel fuller?'),
+              h('div', { style:{ display:'flex', flexDirection:'column', gap:'6px' }},
+                ...fItems.map(function(item, idx) {
+                  const id = 'filler-' + idx;
+                  const cb = h('input', { type:'checkbox', id });
+                  cb.checked = item.checked;
+                  cb.addEventListener('change', function() {
+                    const updated = fillerItems.get().slice();
+                    updated[idx] = { label: updated[idx].label, checked: cb.checked };
+                    fillerItems.set(updated);
+                  });
+                  const lbl = h('label', { for: id, style:{ color:C.text, fontSize:'13px', cursor:'pointer', display:'flex', alignItems:'center', gap:'8px' }}, cb, item.label);
+                  return lbl;
+                }),
+              ),
+            ) : h('span',{});
+
             const remakeBtn = h('button', { style:{ marginTop:'14px', width:'100%', padding:'10px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'8px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, rLoad ? 'Remaking…' : '✨ Remake this meal with your advice');
             remakeBtn.addEventListener('click', runRemake);
             const remakeBox = rResult ? h('div', { style:{ marginTop:'10px', background:C.bg, border:`1px solid ${C.accent}44`, borderRadius:'8px', padding:'12px 14px' }},
@@ -431,7 +509,7 @@ function renderApp() {
                 return copyBtn;
               })(),
             ) : h('span',{});
-            return h('div', {}, remakeBtn, remakeBox);
+            return h('div', {}, fillerSection, remakeBtn, remakeBox);
           })(),
           rerun,
         );
@@ -528,7 +606,7 @@ function renderApp() {
 
   return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
     h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
-      header, goalsEditor, summary, inputSection, analysisPanel, effectPanel, mealList,
+      header, goalsEditor, summary, neverPanel, inputSection, analysisPanel, effectPanel, mealList,
     ),
   );
 }
