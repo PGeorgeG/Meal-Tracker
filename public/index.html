@@ -92,6 +92,7 @@ const effectResult  = signal(null);
 const effectLoad    = signal(false);
 const effectOpen    = signal(false);
 const apiKeyInput   = { value: '' };
+const exerciseCal   = signal(parseInt(localStorage.getItem('meb_exercise')||'0'));
 
 function saveExercise(v) { exerciseCal.set(v); localStorage.setItem('meb_exercise', String(v)); }
 function saveMeals(m) { meals.set(m); localStorage.setItem('meb_meals', JSON.stringify(m)); }
@@ -163,20 +164,32 @@ async function runEffect() {
     const now = new Date();
     const hour = now.getHours();
     const minute = now.getMinutes();
-    const timeStr = (hour % 12 || 12) + ':' + String(minute).padStart(2,'0') + (hour < 12 ? ' AM' : ' PM');
-    const cutoffHour = 20; // 8pm
-    const hoursLeft = Math.max(0, cutoffHour - hour - (minute / 60));
-    const dayComplete = hoursLeft === 0;
-    const text = await callClaude(
-      'You are a nutrition and weight loss analyst. Use the Mifflin-St Jeor equation. Be concise — one short sentence per field. These are NOT necessarily the full day\'s totals — account for time of day and meals still to come. JSON only, no markdown, no backticks:\n{"tdee":number,"deficit":number,"weeklyLossKg":number,"calories":"sentence on calories so far and how much room remains for the day","protein":"sentence on protein so far vs target ~166g and whether more is needed","carbs":"sentence on carbs so far and remaining balance","fat":"sentence on fat so far","fiber":"sentence on fiber estimate and whether more needed","vitamins":"sentence on any gaps or strengths based on foods eaten","overall":"one sentence on how the day is tracking so far, or full verdict if day is complete","motivation":"one short encouraging line"}',
-      `Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day).
-Current time: ${timeStr}. ${dayComplete ? 'The eating window is closed (after 8pm) — this is the full day.' : `About ${hoursLeft.toFixed(1)} hours left in the eating window (stops at 8pm).`}
-Exercise burned today: ${exerciseCal.get()} kcal (from Strava/Coros — note these devices typically over-report by 10-20%, factor that in your assessment).
-Meals so far: ${todayMeals.get().map(m => m.description).join('; ')}.
-Totals so far: ${Math.round(tot.calories)} kcal eaten, ${Math.round(tot.protein)}g protein, ${Math.round(tot.carbs)}g carbs, ${Math.round(tot.fat)}g fat.
-Net calories so far: ${Math.round(tot.calories - exerciseCal.get())} kcal (eaten minus exercise burn).`,
-      600
-    );
+    const ampm = hour < 12 ? 'AM' : 'PM';
+    const h12 = hour % 12 || 12;
+    const timeStr = h12 + ':' + String(minute).padStart(2,'0') + ' ' + ampm;
+    const hoursLeft = Math.max(0, 20 - hour - (minute / 60));
+    const windowMsg = hoursLeft === 0
+      ? 'The eating window is closed (after 8pm) — this is the full day.'
+      : 'About ' + hoursLeft.toFixed(1) + ' hours left in the eating window (stops at 8pm).';
+    const mealList = todayMeals.get().map(function(m) { return m.description; }).join('; ');
+    const userMsg = 'Person: Male, 62 years old, 104 kg, 185 cm, moderately active (TDEE ~2650 kcal/day). ' +
+      'Current time: ' + timeStr + '. ' + windowMsg + ' ' +
+      'Meals so far: ' + mealList + '. ' +
+      'Totals so far: ' + Math.round(tot.calories) + ' kcal, ' +
+      Math.round(tot.protein) + 'g protein, ' +
+      Math.round(tot.carbs) + 'g carbs, ' +
+      Math.round(tot.fat) + 'g fat.';
+    const system = 'You are a nutrition and weight loss analyst. Use Mifflin-St Jeor. One short sentence per field. These may not be the full day — account for time remaining. JSON only, no markdown, no backticks: ' +
+      '{"tdee":number,"deficit":number,"weeklyLossKg":number,' +
+      '"calories":"calories so far and room remaining",' +
+      '"protein":"protein so far vs ~166g target",' +
+      '"carbs":"carbs so far and balance",' +
+      '"fat":"fat so far",' +
+      '"fiber":"fiber estimate",' +
+      '"vitamins":"gaps or strengths",' +
+      '"overall":"how the day is tracking, or full verdict if after 8pm",' +
+      '"motivation":"one short encouraging line"}';
+    const text = await callClaude(system, userMsg, 600);
     effectResult.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
   } catch(e) { console.error(e); effectResult.set({ error: true }); }
   finally { effectLoad.set(false); }
