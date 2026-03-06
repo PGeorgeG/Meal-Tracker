@@ -147,7 +147,7 @@ async function runAnalysis() {
   try {
     const mealList = list.map(m => `- ${m.description}: ${m.calories} kcal, ${m.protein}g protein, ${m.carbs}g carbs, ${m.fat}g fat`).join('\n');
     const text = await callClaude(
-      'You are a practical nutrition coach. Identify where calories could most easily be cut. Be specific and concise. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"swap","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"summary":"one sentence"}',
+      'You are a practical nutrition coach. Identify where calories could most easily be cut, prioritising \'empty calories\' — calories that add little protein, fibre, or micronutrient value (e.g. cooking oils, sugary drinks, refined carbs, sauces, alcohol). Be specific and concise. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"specific swap or reduction","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one sentence identifying any empty calorie sources in today\'s meals, or \'None spotted\' if not applicable","summary":"one sentence"}',
       "Today's meals:\n" + mealList + '\n\nWhere could I most easily cut calories?',
       600
     );
@@ -357,7 +357,7 @@ function renderApp() {
   let analysisPanel = h('span',{});
   if (tm.length > 0) {
     const aOpen = analysisOpen.get();
-    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '✂️ ', aOpen ? 'Hide Analysis' : 'Where can I cut calories?');
+    const toggleBtn = h('button', { style:{ width:'100%', padding:'11px', background:'none', border:`1px solid ${C.accent}66`, borderRadius:'10px', color:C.accent, fontFamily:"'DM Sans',sans-serif", fontWeight:'500', fontSize:'14px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}, '✂️ ', aOpen ? 'Hide Analysis' : 'Possible calorie cuts');
     toggleBtn.addEventListener('click', () => { if (aOpen) analysisOpen.set(false); else runAnalysis(); });
     let panelContent = h('span',{});
     if (aOpen) {
@@ -384,6 +384,10 @@ function renderApp() {
                 h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
               ))
             ),
+          ) : h('span',{}),
+          al.emptyCals ? h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:'1px solid #c94f4f33', marginBottom:'8px', fontSize:'12px' }},
+            h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'1px', color:'#c94f4f', marginRight:'8px' }}, '⚠ Empty cals'),
+            h('span', { style:{ color:C.muted }}, al.emptyCals),
           ) : h('span',{}),
           h('div', { style:{ borderTop:`1px solid ${C.border}`, paddingTop:'12px', marginTop:'4px', color:C.muted, fontStyle:'italic', fontSize:'12px' }}, al.summary),
           rerun,
