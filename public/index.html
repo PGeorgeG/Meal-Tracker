@@ -76,7 +76,7 @@ const C = {
   fat:'#8fc47a', calories:'#e8c547', danger:'#c94f4f', analysis:'#161814',
 };
 const todayStr = () => new Date().toISOString().split('T')[0];
-const DEFAULT_GOALS = { calories: 2000, carbs: 250, protein: 166 };
+const DEFAULT_GOALS = { calories: 2000, carbs: 250, protein: 166, fat: 65 };
 
 const apiKey        = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
 const _allMeals = JSON.parse(localStorage.getItem('meb_meals') || '[]');
@@ -200,7 +200,7 @@ async function runAnalysis() {
     const mealList = '- ' + latest.description + ': ' + latest.calories + ' kcal, ' + latest.protein + 'g protein, ' + latest.carbs + 'g carbs, ' + latest.fat + 'g fat';
     const text = await callClaude(
       'You are a practical nutrition coach. Identify where calories could most easily be cut, prioritising \'empty calories\'. Also suggest up to 3 ways to maximise how long this meal keeps hunger at bay — this can mean increasing an existing ingredient already in the meal (e.g. more chicken, extra eggs) OR adding something new. Prioritise high-protein and high-fibre options that slow digestion and stabilise blood sugar. Be specific, include a brief reason, and keep calorie cost modest. JSON only, no markdown:\n{"topCut":{"meal":"name","suggestion":"specific swap or reduction","savedKcal":number},"otherTips":[{"meal":"name","suggestion":"...","savedKcal":number}],"emptyCals":"one sentence identifying any empty calorie sources, or null","fillerSuggestions":["specific suggestion + why it helps","specific suggestion + why it helps","specific suggestion + why it helps"],"summary":"one sentence"}',
-      'Most recent meal:\n' + mealList + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories in this meal?',
+      'Most recent meal:\n' + mealList + '\n\nMy daily targets: ' + (goals.get().calories) + ' kcal, ' + (goals.get().protein || 166) + 'g protein, ' + (goals.get().carbs || 250) + 'g carbs, ' + (goals.get().fat || 65) + 'g fat.' + (neverEat.get().length ? '\n\nFoods I will never eat: ' + neverEat.get().join(', ') + '. Do not suggest these.' : '') + '\n\nWhere could I most easily cut calories in this meal?',
       600
     );
     const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
@@ -225,7 +225,7 @@ async function runRemake() {
   try {
     const text = await callClaude(
       'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return JSON only, no markdown: {"description":"plain meal description as someone would type into a meal log","calories":estimated_calorie_count_as_number}',
-      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Person: ' + profileSummary(profile.get()) + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
+      'Original meal(s): ' + mealDescs + '. Original calorie total: ~' + Math.round(totals.get().calories) + ' kcal. Person: ' + profileSummary(profile.get()) + '. Suggestions: ' + tips + (emptyCals ? '. Empty calories to reduce: ' + emptyCals : '') + (checkedFillers.length ? '. Also add: ' + checkedFillers.join(', ') : '') + (neverEat.get().length ? '. NEVER suggest or include these foods: ' + neverEat.get().join(', ') + '.' : '') + ' My targets: ' + (goals.get().protein || 166) + 'g protein, ' + (goals.get().fat || 65) + 'g fat. Rewrite the meal applying all of this. The rewritten meal must not exceed ' + Math.round(totals.get().calories) + ' kcal.',
       200
     );
     try {
@@ -270,7 +270,7 @@ async function runEffect() {
     const system = 'You are a nutrition and weight loss analyst. Use Mifflin-St Jeor. One short sentence per field. These may not be the full day — account for time remaining. JSON only, no markdown, no backticks: ' +
       '{"tdee":number,"deficit":number,"weeklyLossKg":number,' +
       '"calories":"calories so far and room remaining",' +
-      '"protein":"protein so far vs ~166g target",' +
+      '"protein":"protein so far vs ' + (goals.get().protein || 166) + 'g target and whether more is needed",' +
       '"carbs":"carbs so far and balance",' +
       '"fat":"fat so far",' +
       '"fiber":"fiber estimate",' +
@@ -384,11 +384,13 @@ function renderApp() {
   if (editGoals.get()) {
     const calInp  = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const carbInp = h('input', { type:'number', value:String(g.carbs),    style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const fatInp  = h('input', { type:'number', value:String(g.fat || 65), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const protInp = h('input', { type:'number', value:String(g.protein || 166), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
     saveBtn.addEventListener('click', () => {
       const c = parseInt(calInp.value), cb = parseInt(carbInp.value), pr = parseInt(protInp.value);
-      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb, protein: pr || 166 }); editGoals.set(false); }
+      const ft = parseInt(fatInp.value);
+      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb, protein: pr || 166, fat: ft || 65 }); editGoals.set(false); }
     });
     const cancelBtn = h('button', { style:{ flex:'1', padding:'9px', background:'none', color:C.muted, border:`1px solid ${C.border}`, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
     cancelBtn.addEventListener('click', () => editGoals.set(false));
@@ -398,6 +400,7 @@ function renderApp() {
         h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Calories'), calInp),
         h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Carbs (g)'), carbInp),
         h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.protein, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Protein (g)'), protInp),
+        h('div', { style:{flex:'1'}}, h('div', { style:{ fontSize:'11px', color:C.fat, marginBottom:'5px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, 'Fat (g)'), fatInp),
       ),
       h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
     );
@@ -431,7 +434,7 @@ function renderApp() {
     macroBar('Calories', tot.calories, g.calories, C.calories),
     macroBar('Protein',  tot.protein,  g.protein || 166, C.protein),
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
-    macroBar('Fat',      tot.fat,      65,          C.fat),
+    macroBar('Fat',      tot.fat,      g.fat || 65, C.fat),
     h('div', { style:{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}, editGoalsBtn, neverToggle, profileToggle),
   );
 
