@@ -68,7 +68,8 @@ function mount(container, renderFn) {
 }
 
 const refs = {};
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL_FAST   = 'claude-haiku-4-5-20251001';  // cheap, fast — for estimation
+const MODEL_SMART  = 'claude-sonnet-4-20250514';  // nuanced — for analysis & remake
 const C = {
   bg:'#0f0e0c', card:'#1a1916', border:'#2e2b26', accent:'#e8c547',
   text:'#f0ead8', muted:'#7a7060', protein:'#e07b54', carbs:'#5b9bd5',
@@ -78,9 +79,33 @@ const todayStr = () => new Date().toISOString().split('T')[0];
 const DEFAULT_GOALS = { calories: 2000, carbs: 250, protein: 166 };
 
 const apiKey        = signal(window.__ANTHROPIC_API_KEY__ || localStorage.getItem('meb_apikey') || '');
-const meals         = signal(JSON.parse(localStorage.getItem('meb_meals') || '[]'));
+const _allMeals = JSON.parse(localStorage.getItem('meb_meals') || '[]');
+const _today = todayStr();
+const _todayMeals = _allMeals.filter(function(m) { return m.date === _today; });
+if (_todayMeals.length !== _allMeals.length) localStorage.setItem('meb_meals', JSON.stringify(_todayMeals));
+const meals         = signal(_todayMeals);
 const goals         = signal(JSON.parse(localStorage.getItem('meb_goals') || 'null') || DEFAULT_GOALS);
 const date          = signal(todayStr());
+
+// Auto-advance date at midnight
+(function() {
+  function msUntilMidnight() {
+    var now = new Date();
+    var midnight = new Date(now); midnight.setHours(24,0,0,0);
+    return midnight - now;
+  }
+  function scheduleReset() {
+    setTimeout(function() {
+      var today = todayStr();
+      date.set(today);
+      // Clear all meals from previous days
+      var kept = meals.get().filter(function(m) { return m.date === today; });
+      saveMeals(kept);
+      scheduleReset();
+    }, msUntilMidnight());
+  }
+  scheduleReset();
+})();
 const inputVal      = { value: '' };
 const loading       = signal(false);
 const errMsg        = signal('');
@@ -132,7 +157,7 @@ const totals = computed(() => todayMeals.get().reduce((acc, m) => ({
   fat:      acc.fat      + (m.fat || 0),
 }), { calories:0, protein:0, carbs:0, fat:0 }));
 
-async function callClaude(system, userMsg, maxTokens=300) {
+async function callClaude(system, userMsg, maxTokens=300, model=MODEL_SMART) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -141,7 +166,7 @@ async function callClaude(system, userMsg, maxTokens=300) {
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role:'user', content: userMsg }] }),
+    body: JSON.stringify({ model: model, max_tokens: maxTokens, system, messages: [{ role:'user', content: userMsg }] }),
   });
   const data = await res.json();
   return data.content.map(b => b.text || '').join('');
@@ -152,7 +177,8 @@ async function estimateMeal(desc) {
   try {
     const text = await callClaude(
       'You are a nutrition estimation assistant. Estimate calories, protein (g), carbs (g), and fat (g) for the meal described.\nRespond ONLY with valid JSON, no markdown:\n{"calories":number,"protein":number,"carbs":number,"fat":number,"note":"brief note"}',
-      'Estimate nutrition for: ' + desc
+      'Estimate nutrition for: ' + desc,
+      200, MODEL_FAST
     );
     return JSON.parse(text.replace(/```json|```/g,'').trim());
   } catch(e) {
@@ -164,6 +190,11 @@ async function runAnalysis() {
   const list = todayMeals.get();
   if (!list.length) return;
   const latest = list[list.length - 1];
+  // Cache: skip API call if meal hasn't changed since last analysis
+  const cacheKey = latest.id + ':' + latest.description;
+  if (analysis.get() && analysis.get()._cacheKey === cacheKey) {
+    analysisOpen.set(true); return;
+  }
   analysisLoad.set(true); analysisOpen.set(true); analysis.set(null);
   try {
     const mealList = '- ' + latest.description + ': ' + latest.calories + ' kcal, ' + latest.protein + 'g protein, ' + latest.carbs + 'g carbs, ' + latest.fat + 'g fat';
@@ -173,6 +204,7 @@ async function runAnalysis() {
       600
     );
     const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
+    parsed._cacheKey = latest.id + ':' + latest.description;
     analysis.set(parsed);
     if (parsed.fillerSuggestions) {
       fillerItems.set(parsed.fillerSuggestions.map(function(s) { return { label: s, checked: false }; }));
@@ -209,6 +241,11 @@ async function runRemake() {
 async function runEffect() {
   const tot = totals.get();
   if (!tot.calories) return;
+  // Cache: skip if totals haven't changed
+  const effectKey = Math.round(tot.calories) + ':' + Math.round(tot.protein) + ':' + Math.round(tot.carbs) + ':' + Math.round(tot.fat);
+  if (effectResult.get() && effectResult.get()._cacheKey === effectKey) {
+    effectOpen.set(true); return;
+  }
   effectLoad.set(true); effectOpen.set(true); effectResult.set(null);
   try {
     const now = new Date();
@@ -241,7 +278,9 @@ async function runEffect() {
       '"overall":"how the day is tracking, or full verdict if after 8pm",' +
       '"motivation":"one short encouraging line"}';
     const text = await callClaude(system, userMsg, 600);
-    effectResult.set(JSON.parse(text.replace(/```json|```/g,'').trim()));
+    const er = JSON.parse(text.replace(/```json|```/g,'').trim());
+    er._cacheKey = effectKey;
+    effectResult.set(er);
   } catch(e) { console.error(e); effectResult.set({ error: true }); }
   finally { effectLoad.set(false); }
 }
@@ -252,6 +291,7 @@ async function addMeal() {
   const nutrition = await estimateMeal(desc);
   if (!nutrition) return;
   saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
+  analysis.set(null); effectResult.set(null); remakeResult.set(null); // invalidate caches
   inputVal.value = '';
   if (refs.textarea) refs.textarea.value = '';
   // Late meal nudge
@@ -324,8 +364,7 @@ function renderApp() {
   const isLoading = loading.get();
 
   // Header
-  const dateInput = h('input', { type:'date', value:date.get(), style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', cursor:'pointer', outline:'none', padding:'0', marginTop:'4px' }});
-  dateInput.addEventListener('change', e => date.set(e.target.value));
+  const dateInput = h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color:C.muted, display:'block', marginTop:'4px' }}, date.get());
   const serverKey = !!window.__ANTHROPIC_API_KEY__;
   const apiKeyLink = serverKey ? h('span',{}) : h('button', { style:{ background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', textDecoration:'underline' }}, 'API key');
   if (!serverKey) apiKeyLink.addEventListener('click', () => { if (confirm('Clear API key and log out?')) { localStorage.removeItem('meb_apikey'); apiKey.set(''); }});
@@ -344,10 +383,13 @@ function renderApp() {
   let goalsEditor = h('span',{});
   if (editGoals.get()) {
     const calInp  = h('input', { type:'number', value:String(g.calories), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
-    const protInp = h('input', { type:'number', value:String(g.protein || 166), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const carbInp = h('input', { type:'number', value:String(g.carbs),    style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
+    const protInp = h('input', { type:'number', value:String(g.protein || 166), style:{ width:'100%', background:C.bg, border:`1px solid ${C.border}`, borderRadius:'8px', color:C.text, fontFamily:"'DM Mono',monospace", fontSize:'14px', padding:'8px 12px', outline:'none' }});
     const saveBtn = h('button', { style:{ flex:'1', padding:'9px', background:C.accent, color:'#1a1600', border:'none', borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontWeight:'600', fontSize:'13px', cursor:'pointer' }}, 'Save');
-    saveBtn.addEventListener('click', () => { const c=parseInt(calInp.value),cb=parseInt(carbInp.value); if(c>0&&cb>0){saveGoals({calories:c,carbs:cb});editGoals.set(false);} });
+    saveBtn.addEventListener('click', () => {
+      const c = parseInt(calInp.value), cb = parseInt(carbInp.value), pr = parseInt(protInp.value);
+      if (c > 0 && cb > 0) { saveGoals({ calories:c, carbs:cb, protein: pr || 166 }); editGoals.set(false); }
+    });
     const cancelBtn = h('button', { style:{ flex:'1', padding:'9px', background:'none', color:C.muted, border:`1px solid ${C.border}`, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
     cancelBtn.addEventListener('click', () => editGoals.set(false));
     goalsEditor = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
@@ -423,11 +465,12 @@ function renderApp() {
           })
         );
       } else {
-        inp = h('input', { type:'number', value: String(p[f.key]), style: inputStyle });
+        inp = h('input', { type:'number', value: String(p[f.key] || ''), style: inputStyle });
       }
       inp.addEventListener('focus', function() { inp.style.borderColor = C.accent + '88'; });
       inp.addEventListener('blur',  function() { inp.style.borderColor = C.border; });
       inputs[f.key] = inp;
+
       return h('div', { style:{ flex:'1', minWidth:'120px' }},
         h('div', { style:{ fontSize:'11px', color:C.muted, marginBottom:'4px', fontFamily:"'DM Mono',monospace", textTransform:'uppercase', letterSpacing:'1px' }}, f.label),
         inp,
@@ -443,6 +486,7 @@ function renderApp() {
         activity: inputs.activity.value,
       };
       saveProfile(updated);
+
       showProfile.set(false);
     });
     const cancelBtn = h('button', { style:{ padding:'9px 18px', background:'none', color:C.muted, border:'1px solid ' + C.border, borderRadius:'8px', fontFamily:"'DM Sans',sans-serif", fontSize:'13px', cursor:'pointer' }}, 'Cancel');
@@ -685,7 +729,7 @@ function renderApp() {
           ),
           h('div', { style:{ display:'flex', gap:'6px', flexShrink:'0' }},
             iconBtn('↻', C.accent, () => { inputVal.value = meal.description; if(refs.textarea) refs.textarea.value = meal.description; }),
-            iconBtn('×', C.danger, () => saveMeals(meals.get().filter(m => m.id !== meal.id))),
+            iconBtn('×', C.danger, () => { saveMeals(meals.get().filter(m => m.id !== meal.id)); analysis.set(null); effectResult.set(null); remakeResult.set(null); }),
           ),
         );
         card.addEventListener('mouseenter', () => card.style.borderColor = C.accent+'55');
