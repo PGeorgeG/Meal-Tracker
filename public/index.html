@@ -127,6 +127,7 @@ const showNever     = signal(false);
 const remakeResult  = signal(null);
 const remakeLoading = signal(false);
 const fillerItems   = signal([]);  // [{label, checked}]
+const checkedCuts   = signal({});
 
 function saveProfile(p) { profile.set(p); localStorage.setItem('meb_profile', JSON.stringify(p)); }
 
@@ -169,6 +170,10 @@ async function callClaude(system, userMsg, maxTokens=300, model=MODEL_SMART) {
     body: JSON.stringify({ model: model, max_tokens: maxTokens, system, messages: [{ role:'user', content: userMsg }] }),
   });
   const data = await res.json();
+  if (!res.ok || data.error) {
+    const msg = (data.error && data.error.message) || ('API error ' + res.status);
+    throw new Error(msg);
+  }
   return data.content.map(b => b.text || '').join('');
 }
 
@@ -210,7 +215,7 @@ async function runAnalysis() {
     if (parsed.fillerSuggestions) {
       fillerItems.set(parsed.fillerSuggestions.map(function(s) { return { label: s, checked: false }; }));
     }
-  } catch { analysis.set({ error: true }); }
+  } catch(e) { analysis.set({ error: true, message: e.message || 'Unknown error' }); }
   finally { analysisLoad.set(false); }
 }
 
@@ -221,13 +226,13 @@ async function runRemake() {
   const latestMeal = todayMeals.get()[todayMeals.get().length - 1];
   const mealDescs = latestMeal ? latestMeal.description : '';
   const cc = checkedCuts.get();
+  const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
   const activeTips = [];
   if (cc['topCut'] !== false) activeTips.push(al.topCut.suggestion);
   (al.otherTips || []).forEach(function(t, idx) { if (cc['tip-' + idx] !== false) activeTips.push(t.suggestion); });
   const tips = activeTips.join('; ');
   if (!tips && !checkedFillers.length) { errMsg.set('Please check at least one suggestion to apply.'); return; }
   const emptyCals = al.emptyCals || '';
-  const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
   try {
     const text = await callClaude(
       'You are a meal planning assistant. Rewrite the meal description applying the suggestions and including any requested additions. CRITICAL CONSTRAINT: the rewritten meal must have the same or fewer calories than the original — if adding ingredients, cut elsewhere to compensate. Return JSON only, no markdown: {"description":"plain meal description as someone would type into a meal log","calories":estimated_calorie_count_as_number}',
@@ -583,7 +588,7 @@ function renderApp() {
       const al = analysis.get(); const aLoad = analysisLoad.get();
       let inner;
       if (aLoad) inner = h('div', { style:{ color:C.muted, fontStyle:'italic', textAlign:'center', padding:'12px 0' }}, 'Analysing your meals…');
-      else if (al && al.error) inner = h('div', { style:{ color:C.danger }}, "Couldn't generate analysis. Try again.");
+      else if (al && al.error) inner = h('div', { style:{ color:C.danger }}, (al.message ? al.message : "Couldn't generate analysis.") + ' ', (() => { const b = h('button', { style:{ background:'none', border:'none', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', textDecoration:'underline', padding:'0' }}, 'Try again'); b.addEventListener('click', () => { analysis.set(null); runAnalysis(); }); return b; })());
       else if (al) {
         const rerun = h('button', { style:{ marginTop:'12px', background:'none', border:'none', color:C.accent+'88', fontFamily:"'DM Mono',monospace", fontSize:'11px', cursor:'pointer', padding:'0', textDecoration:'underline' }}, 're-run analysis');
         rerun.addEventListener('click', runAnalysis);
