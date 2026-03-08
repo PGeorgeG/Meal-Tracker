@@ -206,6 +206,7 @@ async function runAnalysis() {
     const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
     parsed._cacheKey = latest.id + ':' + latest.description;
     analysis.set(parsed);
+    checkedCuts.set({});
     if (parsed.fillerSuggestions) {
       fillerItems.set(parsed.fillerSuggestions.map(function(s) { return { label: s, checked: false }; }));
     }
@@ -219,7 +220,12 @@ async function runRemake() {
   remakeLoading.set(true); remakeResult.set(null);
   const latestMeal = todayMeals.get()[todayMeals.get().length - 1];
   const mealDescs = latestMeal ? latestMeal.description : '';
-  const tips = [al.topCut.suggestion].concat((al.otherTips || []).map(function(t) { return t.suggestion; })).join('; ');
+  const cc = checkedCuts.get();
+  const activeTips = [];
+  if (cc['topCut'] !== false) activeTips.push(al.topCut.suggestion);
+  (al.otherTips || []).forEach(function(t, idx) { if (cc['tip-' + idx] !== false) activeTips.push(t.suggestion); });
+  const tips = activeTips.join('; ');
+  if (!tips && !checkedFillers.length) { errMsg.set('Please check at least one suggestion to apply.'); return; }
   const emptyCals = al.emptyCals || '';
   const checkedFillers = fillerItems.get().filter(function(i) { return i.checked; }).map(function(i) { return i.label; });
   try {
@@ -584,18 +590,47 @@ function renderApp() {
         inner = h('div', {},
           h('div', { style:{ marginBottom:'14px' }},
             h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent, marginBottom:'8px' }}, 'Best Cut'),
-            h('div', { style:{ background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.accent}33`, display:'flex', gap:'12px', alignItems:'flex-start' }},
-              h('div', { style:{flex:'1'}}, h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal), h('div', { style:{ color:C.muted }}, al.topCut.suggestion)),
-              h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
-            ),
+            (() => {
+              const cc = checkedCuts.get();
+              const cbTop = h('input', { type:'checkbox' });
+              cbTop.checked = cc['topCut'] !== false;
+              cbTop.addEventListener('change', function() {
+                const u = Object.assign({}, checkedCuts.get()); u['topCut'] = cbTop.checked; checkedCuts.set(u);
+              });
+              return h('div', { style:{ background:C.card, borderRadius:'8px', padding:'12px 14px', border:`1px solid ${C.accent}33`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                h('label', { style:{ display:'flex', alignItems:'flex-start', gap:'10px', flex:'1', cursor:'pointer' }},
+                  cbTop,
+                  h('div', { style:{flex:'1'}},
+                    h('div', { style:{ color:C.text, fontFamily:"'Playfair Display',serif", fontSize:'14px', marginBottom:'3px' }}, al.topCut.meal),
+                    h('div', { style:{ color:C.muted }}, al.topCut.suggestion),
+                  ),
+                ),
+                h('div', { style:{ flexShrink:'0', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'13px', whiteSpace:'nowrap' }}, '−'+al.topCut.savedKcal+' kcal'),
+              );
+            })(),
           ),
           al.otherTips && al.otherTips.length ? h('div', { style:{ marginBottom:'14px' }},
             h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'8px' }}, 'Other Ideas'),
             h('div', { style:{ display:'flex', flexDirection:'column', gap:'8px' }},
-              ...al.otherTips.map(tip => h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
-                h('div', { style:{flex:'1'}}, h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal), h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion)),
-                h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
-              ))
+              ...al.otherTips.map(function(tip, idx) {
+                const cc = checkedCuts.get();
+                const key = 'tip-' + idx;
+                const cb = h('input', { type:'checkbox' });
+                cb.checked = cc[key] !== false;
+                cb.addEventListener('change', function() {
+                  const u = Object.assign({}, checkedCuts.get()); u[key] = cb.checked; checkedCuts.set(u);
+                });
+                return h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:`1px solid ${C.border}`, display:'flex', gap:'12px', alignItems:'flex-start' }},
+                  h('label', { style:{ display:'flex', alignItems:'flex-start', gap:'10px', flex:'1', cursor:'pointer' }},
+                    cb,
+                    h('div', { style:{flex:'1'}},
+                      h('div', { style:{ color:C.text, fontSize:'13px', marginBottom:'2px' }}, tip.meal),
+                      h('div', { style:{ color:C.muted, fontSize:'12px' }}, tip.suggestion),
+                    ),
+                  ),
+                  h('div', { style:{ flexShrink:'0', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'12px', whiteSpace:'nowrap' }}, '−'+tip.savedKcal+' kcal'),
+                );
+              })
             ),
           ) : h('span',{}),
           al.emptyCals ? h('div', { style:{ background:C.card, borderRadius:'8px', padding:'10px 14px', border:'1px solid #c94f4f33', marginBottom:'8px', fontSize:'12px' }},
