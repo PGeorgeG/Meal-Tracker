@@ -308,7 +308,7 @@ async function addMeal() {
   // Late meal nudge
   const now = new Date();
   const mins = now.getHours() * 60 + now.getMinutes();
-  if (mins >= 18 * 60 + 30 && nutrition.calories > 200) {
+  if (mins >= 20 * 60 && nutrition.calories > 200) {
     lateNudge.set(true);
     setTimeout(function() { lateNudge.set(false); }, 8000);
   }
@@ -430,15 +430,7 @@ function renderApp() {
     h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
       h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
-        h('div', { style:{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'2px' }},
-          h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted }}, over ? Math.abs(Math.round(remaining)) + ' kcal over' : Math.round(remaining) + ' kcal left'),
-          (() => {
-            const protTarget = g.protein || 166;
-            const protLeft = protTarget - tot.protein;
-            const protOver = protLeft < 0;
-            return h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: protOver ? C.fat : C.protein, whiteSpace:'nowrap' }}, protOver ? Math.abs(Math.round(protLeft)) + 'g protein over' : Math.round(protLeft) + 'g protein to go');
-          })(),
-        ),
+        h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'12px', color: over ? C.danger : C.muted, whiteSpace:'nowrap' }}, over ? Math.abs(Math.round(remaining)) + ' kcal over' : Math.round(remaining) + ' kcal left'),
         h('span', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent, whiteSpace:'nowrap' }}, Math.round(tot.calories), h('span', { style:{ fontSize:'11px', color:C.muted, fontFamily:"'DM Mono',monospace" }}, ' kcal')),
       ),
     ),
@@ -757,7 +749,18 @@ function renderApp() {
     mealList = h('div', { style:{ textAlign:'center', color:C.muted, fontStyle:'italic', padding:'40px 0', fontSize:'14px' }}, 'No meals logged yet for this day.');
   } else {
     mealList = h('div', {},
-      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted, marginBottom:'12px' }}, tm.length + ' meal' + (tm.length !== 1 ? 's' : '')),
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, tm.length + ' meal' + (tm.length !== 1 ? 's' : '')),
+        (() => {
+          const clrBtn = h('button', { style:{ background:'none', border:'none', color:C.danger, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, 'clear all');
+          clrBtn.addEventListener('click', function() {
+            if (confirm('Clear all meals for today?')) {
+              saveMeals([]); analysis.set(null); effectResult.set(null); remakeResult.set(null);
+            }
+          });
+          return clrBtn;
+        })(),
+      ),
       ...[...tm].reverse().map(meal => {
         const card = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'10px', padding:'14px 16px', marginBottom:'10px', display:'flex', gap:'12px', alignItems:'flex-start', transition:'border-color 0.2s' }},
           h('div', { style:{ flex:'1', minWidth:'0' }},
@@ -789,7 +792,7 @@ function renderApp() {
         h('span', { style:{ fontSize:'18px', flexShrink:'0' }}, '🌙'),
         h('div', {},
           h('div', { style:{ color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'3px' }}, 'Late meal'),
-          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.5' }}, 'Phil, you asked me to do this, so… it’s after 6:30pm. Consider keeping this light. Front-loading calories earlier in the day supports better energy and weight management.'),
+          h('div', { style:{ color:C.muted, fontSize:'13px', lineHeight:'1.5' }}, 'It’s after 8pm. Consider keeping it light.'),
         ),
       ) : h('span',{}),
       analysisPanel, effectPanel, mealList,
