@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Mise en Bouche</title>
+  <title>Earn The Ride</title>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -107,6 +107,7 @@ const date          = signal(todayStr());
   scheduleReset();
 })();
 const inputVal      = { value: '' };
+setTimeout(claimPendingUnlock, 800);
 const loading       = signal(false);
 const errMsg        = signal('');
 const editGoals     = signal(false);
@@ -128,6 +129,91 @@ const remakeResult  = signal(null);
 const remakeLoading = signal(false);
 const fillerItems   = signal([]);  // [{label, checked}]
 const checkedCuts   = signal({});
+
+
+// ============================================================
+// REVOLT 1 REWARD SYSTEM — 40 parts, one per day, ends May 4
+// ============================================================
+const BIKE_PARTS = [
+  { id:'bartape_plugs', name:'Bar end plugs', value:6, emoji:'🔩', desc:'The finishing touch on your bars' },
+  { id:'wheels', name:'Wheelset (700c)', value:277, emoji:'⚙️', desc:'Giant aluminum wheels, ready to roll' },
+  { id:'cable_ends', name:'Cable end caps', value:5, emoji:'🔧', desc:'Tiny but essential - keeps cables from fraying' },
+  { id:'drivetrain', name:'Shimano GRX Drivetrain', value:234, emoji:'⚡', desc:'2x10 GRX/Tiagra - smooth across any surface' },
+  { id:'bartape', name:'Bar tape', value:22, emoji:'🎀', desc:'Cushioned grip for the long haul' },
+  { id:'fork', name:'Carbon fork', value:204, emoji:'🏆', desc:'Advanced composite - absorbs every bump' },
+  { id:'valves', name:'Valve stems', value:6, emoji:'💨', desc:'Presta valves - your tires breathe through these' },
+  { id:'brake_levers', name:'GRX Brake levers', value:66, emoji:'🤲', desc:'Ergonomic lever reach for confident control' },
+  { id:'rim_tape', name:'Rim tape x2', value:9, emoji:'🏷️', desc:'Protects tubes from spoke holes' },
+  { id:'calipers', name:'GRX Hydraulic calipers', value:95, emoji:'🛑', desc:'Precise hydraulic stopping power' },
+  { id:'spoke_nipples', name:'Spoke nipples x32', value:7, emoji:'🔩', desc:'32 tiny pieces holding your wheels true' },
+  { id:'frame', name:'ALUXX frame', value:380, emoji:'🚲', desc:'The heart of the Revolt - lightweight and tough' },
+  { id:'der_hanger', name:'Derailleur hanger', value:11, emoji:'🪝', desc:'The sacrificial part that saves your frame' },
+  { id:'rear_der', name:'GRX rear derailleur', value:80, emoji:'⚙️', desc:'10-speed precision shifting on any terrain' },
+  { id:'bb', name:'Bottom bracket', value:18, emoji:'🔄', desc:'Smooth rotation at the heart of the drivetrain' },
+  { id:'front_der', name:'GRX front derailleur', value:47, emoji:'↔️', desc:'2x shifting - road speed or gravel grind' },
+  { id:'cr_bolts', name:'Chainring bolts', value:6, emoji:'🔩', desc:'Five bolts holding your power to the cranks' },
+  { id:'crankset', name:'GRX crankset', value:102, emoji:'💪', desc:'The engine room - where your legs meet the bike' },
+  { id:'shift_cables', name:'Shift cable set', value:15, emoji:'🧵', desc:'Stainless inner cables for crisp shifts' },
+  { id:'saddle', name:'Saddle', value:58, emoji:'🪑', desc:'Your perch for the long haul' },
+  { id:'brake_hose', name:'Brake hose set', value:18, emoji:'🔴', desc:'Hydraulic lines - the veins of your braking system' },
+  { id:'tyres', name:'CrossCut AT 2 Tyres x2', value:73, emoji:'🏁', desc:'Gravel-ready. Born for the mixed surface.' },
+  { id:'headset', name:'Headset', value:22, emoji:'🎯', desc:'Bearings that keep your steering smooth' },
+  { id:'seatpost', name:'D-Fuse seatpost', value:95, emoji:'📐', desc:'Giant compliance seatpost - smooth out the rough' },
+  { id:'axles', name:'Thru-axles x2', value:15, emoji:'⚡', desc:'Secure and rattle-free wheel retention' },
+  { id:'cassette', name:'GRX cassette 11-34', value:44, emoji:'🎸', desc:'11-34t - climbs anything, flies on the flat' },
+  { id:'stem_bolts', name:'Stem bolts', value:6, emoji:'🔩', desc:'Four bolts between you and the bars' },
+  { id:'stem', name:'Stem', value:33, emoji:'🎯', desc:'Connects your hands to the front wheel' },
+  { id:'chain', name:'Chain 10-speed', value:22, emoji:'⛓️', desc:'The link between effort and motion' },
+  { id:'bars', name:'Handlebars D-Fuse', value:88, emoji:'🏄', desc:'D-Fuse compliance - tames road buzz beautifully' },
+  { id:'pedal_washers', name:'Pedal washers', value:5, emoji:'🔩', desc:'Tiny protectors for your crank threads' },
+  { id:'pedals', name:'Pedals', value:58, emoji:'👟', desc:'Where the power meets the bike' },
+  { id:'flip_chip', name:'Dropout flip chip', value:11, emoji:'🔧', desc:'Adjusts geometry and tire clearance on the fly' },
+  { id:'rotors', name:'GRX brake rotors x2', value:36, emoji:'⭕', desc:'160mm rotors - confident stopping in any weather' },
+  { id:'seat_clamp', name:'Seat clamp', value:9, emoji:'🗜️', desc:'Keeps your saddle exactly where you want it' },
+  { id:'tubes', name:'Inner tubes x2', value:15, emoji:'🫧', desc:'Last line of defence against a walk home' },
+  { id:'housing', name:'Cable housing set', value:15, emoji:'🧵', desc:'Protects your shift cables from the elements' },
+  { id:'hs_spacers', name:'Headset spacers', value:7, emoji:'📏', desc:'Dial in your stack height perfectly' },
+  { id:'spokes', name:'Spoke set x32', value:26, emoji:'✨', desc:'32 stainless spokes - the web that holds it all' },
+  { id:'assembly', name:'Final assembly', value:58, emoji:'🎉', desc:'Every part in place. The Revolt lives. Ride it.' },
+];
+const BIKE_TOTAL_VALUE = BIKE_PARTS.reduce(function(s,p){ return s + p.value; }, 0);
+
+function loadBikeState() {
+  return JSON.parse(localStorage.getItem('meb_bike') || 'null') || { unlockedIds: [], awardedDates: [], pendingUnlock: null };
+}
+function saveBikeState(s) { localStorage.setItem('meb_bike', JSON.stringify(s)); bikeState.set(s); }
+const bikeState      = signal(loadBikeState());
+const showBike       = signal(false);
+const bikeUnlockAnim = signal(null);
+
+function checkForReward() {
+  var today = todayStr();
+  var state = loadBikeState();
+  if (state.awardedDates && state.awardedDates.indexOf(today) >= 0) return; // already earned today
+  var g = goals.get();
+  var tm = meals.get().filter(function(m){ return m.date === today; });
+  var totalCals = tm.reduce(function(s,m){ return s + (m.calories||0); }, 0);
+  if (totalCals < g.calories * 0.9) return; // below 90% of goal
+  var nextIdx = state.unlockedIds.length;
+  if (nextIdx >= BIKE_PARTS.length) return; // all parts earned!
+  var part = BIKE_PARTS[nextIdx];
+  state.unlockedIds.push(part.id);
+  if (!state.awardedDates) state.awardedDates = [];
+  state.awardedDates.push(today);
+  state.pendingUnlock = { part: part };
+  saveBikeState(state);
+  claimPendingUnlock();
+}
+
+function claimPendingUnlock() {
+  var state = loadBikeState();
+  if (!state.pendingUnlock) return;
+  bikeUnlockAnim.set(state.pendingUnlock);
+  state.pendingUnlock = null;
+  saveBikeState(state);
+  showBike.set(true);
+  setTimeout(function() { bikeUnlockAnim.set(null); }, 7000);
+}
 
 function saveProfile(p) { profile.set(p); localStorage.setItem('meb_profile', JSON.stringify(p)); }
 
@@ -303,6 +389,7 @@ async function addMeal() {
   if (!nutrition) return;
   saveMeals([...meals.get(), { id:Date.now(), description:desc, date:date.get(), ...nutrition }]);
   analysis.set(null); effectResult.set(null); remakeResult.set(null); // invalidate caches
+  checkForReward();
   inputVal.value = '';
   if (refs.textarea) refs.textarea.value = '';
   // Late meal nudge
@@ -358,7 +445,7 @@ function renderApiKeyScreen() {
   continueBtn.addEventListener('click', save);
   return h('div', { style:{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:'24px' }},
     h('div', { style:{ maxWidth:'400px', width:'100%', background:C.card, border:`1px solid ${C.border}`, borderRadius:'14px', padding:'28px 24px' }},
-      h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'24px', color:C.accent, marginBottom:'6px' }}, 'Mise en Bouche'),
+      h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'24px', color:C.accent, marginBottom:'6px' }}, 'Earn The Ride'),
       h('p', { style:{ color:C.muted, fontSize:'13px', marginBottom:'22px', lineHeight:'1.6' }}, "Enter your Anthropic API key to get started. It's stored only in this browser."),
       inp, continueBtn,
       h('p', { style:{ color:C.muted, fontSize:'11px', marginTop:'12px', textAlign:'center' }}, 'Key saved to localStorage — never sent anywhere except Anthropic.'),
@@ -382,8 +469,8 @@ function renderApp() {
   const header = h('div', { style:{ marginBottom:'28px' }},
     h('div', { style:{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginBottom:'2px' }},
       h('div', { style:{ display:'flex', alignItems:'baseline', gap:'10px' }},
-        h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'28px', margin:'0', color:C.accent }}, 'Mise en Bouche'),
-        h('span', { style:{ fontSize:'13px', color:C.muted }}, 'meal journal'),
+        h('h1', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'28px', margin:'0', color:C.accent }}, 'Earn The Ride'),
+        h('span', { style:{ fontSize:'13px', color:C.muted }}, 'eat well. earn the ride.'),
       ),
       apiKeyLink,
     ),
@@ -426,6 +513,10 @@ function renderApp() {
 
   const profileToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.muted, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }}, showProfile.get() ? 'hide profile' : 'profile');
   profileToggle.addEventListener('click', () => showProfile.set(v => !v));
+  const _bsEarly = bikeState.get();
+  const bikeToggle = h('button', { style:{ marginTop:'6px', marginLeft:'12px', background:'none', border:'none', color:C.accent, fontFamily:"'DM Mono',monospace", fontSize:'10px', cursor:'pointer', padding:'0', textTransform:'uppercase', letterSpacing:'1px', textDecoration:'underline' }},
+    showBike.get() ? 'hide bike' : '🚲 revolt (' + _bsEarly.unlockedIds.length + '/' + BIKE_PARTS.length + ')');
+  bikeToggle.addEventListener('click', function() { showBike.set(function(v){ return !v; }); });
   const summary = h('div', { style:{ background:C.card, border:`1px solid ${C.border}`, borderRadius:'12px', padding:'18px 20px', marginBottom:'20px' }},
     h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }},
       h('span', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', textTransform:'uppercase', letterSpacing:'2px', color:C.muted }}, 'Daily Summary'),
@@ -438,7 +529,7 @@ function renderApp() {
     macroBar('Protein',  tot.protein,  g.protein || 166, C.protein),
     macroBar('Carbs',    tot.carbs,    g.carbs,     C.carbs),
     macroBar('Fat',      tot.fat,      g.fat || 65, C.fat),
-    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}, editGoalsBtn, neverToggle, profileToggle),
+    h('div', { style:{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}, editGoalsBtn, neverToggle, profileToggle, bikeToggle),
   );
 
   // Profile panel
@@ -505,6 +596,48 @@ function renderApp() {
       ),
       h('div', { style:{ display:'flex', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}, ...fieldEls),
       h('div', { style:{ display:'flex', gap:'8px' }}, saveBtn, cancelBtn),
+    );
+  }
+
+
+  // ---- BIKE REWARD PANEL ----
+  const bs = bikeState.get();
+
+  let bikePanel = h('span',{});
+  const anim = bikeUnlockAnim.get();
+  if (anim) {
+    bikePanel = h('div', { style:{ background:'#1a1400', border:'2px solid ' + C.accent, borderRadius:'14px', padding:'24px 20px', marginBottom:'20px', textAlign:'center' }},
+      h('div', { style:{ fontSize:'52px', marginBottom:'12px' }}, anim.part.emoji),
+      h('div', { style:{ fontFamily:"'Playfair Display',serif", fontSize:'22px', color:C.accent, marginBottom:'8px' }}, anim.part.name + ' — earned!'),
+      h('div', { style:{ color:C.muted, fontSize:'13px', marginBottom:'10px', lineHeight:'1.5' }}, anim.part.desc),
+      h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, 'CAD ~$' + anim.part.value + ' · part ' + bs.unlockedIds.length + ' of ' + BIKE_PARTS.length),
+    );
+  } else if (showBike.get()) {
+    var pct = Math.min(100, Math.round(bs.unlockedIds.length / BIKE_PARTS.length * 100));
+    var totalUnlocked = bs.unlockedIds.reduce(function(s,id){ var p=BIKE_PARTS.find(function(x){return x.id===id;}); return s+(p?p.value:0); },0);
+    var rows = BIKE_PARTS.map(function(part) {
+      var unlocked = bs.unlockedIds.indexOf(part.id) >= 0;
+      return h('div', { style:{ display:'flex', alignItems:'center', gap:'10px', padding:'8px 0', borderBottom:'1px solid ' + C.border, opacity: unlocked ? '1' : '0.35' }},
+        h('span', { style:{ fontSize:'18px', width:'24px', textAlign:'center' }}, unlocked ? part.emoji : '🔒'),
+        h('div', { style:{ flex:'1' }},
+          h('div', { style:{ fontSize:'13px', color: unlocked ? C.text : C.muted, fontFamily:"'DM Sans',sans-serif" }}, unlocked ? part.name : '???'),
+          unlocked ? h('div', { style:{ fontSize:'11px', color:C.muted, fontStyle:'italic' }}, part.desc) : h('span',{}),
+        ),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color: unlocked ? C.accent : C.muted }}, unlocked ? 'CAD ~$' + part.value : ''),
+      );
+    });
+    bikePanel = h('div', { style:{ background:C.card, border:'1px solid ' + C.accent + '44', borderRadius:'12px', padding:'16px 18px', marginBottom:'20px' }},
+      h('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:'4px' }},
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'10px', textTransform:'uppercase', letterSpacing:'2px', color:C.accent }}, '🚲 Giant Revolt 1'),
+        h('div', { style:{ fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted }}, bs.unlockedIds.length + ' parts earned · ' + pct + '% built'),
+      ),
+      h('div', { style:{ background:C.bg, borderRadius:'4px', height:'6px', marginBottom:'14px', overflow:'hidden' }},
+        h('div', { style:{ width: pct + '%', height:'100%', background: C.accent, borderRadius:'4px', transition:'width 0.6s ease' }}),
+      ),
+      h('div', {}, ...rows),
+      h('div', { style:{ marginTop:'12px', fontFamily:"'DM Mono',monospace", fontSize:'11px', color:C.muted, textAlign:'right' }},
+        'Unlocked value: CAD ~$' + totalUnlocked + ' of ~$' + BIKE_TOTAL_VALUE,
+      ),
     );
   }
 
@@ -787,7 +920,7 @@ function renderApp() {
 
   return h('div', { style:{ minHeight:'100vh', background:C.bg, color:C.text, fontFamily:"'DM Sans',sans-serif" }},
     h('div', { style:{ maxWidth:'520px', margin:'0 auto', padding:'32px 16px 64px' }},
-      header, goalsEditor, summary, profilePanel, neverPanel, inputSection,
+      header, goalsEditor, summary, profilePanel, bikePanel, neverPanel, inputSection,
       lateNudge.get() ? h('div', { style:{ background:'#1a1510', border:'1px solid ' + C.accent + '55', borderRadius:'10px', padding:'12px 16px', marginBottom:'16px', display:'flex', gap:'10px', alignItems:'flex-start' }},
         h('span', { style:{ fontSize:'18px', flexShrink:'0' }}, '🌙'),
         h('div', {},
